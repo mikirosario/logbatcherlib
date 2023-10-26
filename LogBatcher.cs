@@ -111,7 +111,8 @@ namespace LogBatcher
         /// <summary>
         /// Validates log file path and creates directories indicated
         /// therein if needed.
-        /// Returns validated log file path relative to the build directory.
+        /// Returns validated log file path relative to the executable's
+        /// directory.
         /// </summary>
         /// <remarks>
         /// Invalid file paths result in LoggerName being
@@ -137,6 +138,7 @@ namespace LogBatcher
         {
             string baseLogPath;
             string dir;
+            string exeDirectory = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
             try
             {
                 if (string.IsNullOrWhiteSpace(logFilePath) || logFilePath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
@@ -155,14 +157,13 @@ namespace LogBatcher
                 if (dir.Length < 1) //Directory not provided
                 {
                     dir = LoggerName;
-                    baseLogPath = Path.Combine(LoggerName, logFilePath);
+                    baseLogPath = Path.Combine(exeDirectory, LoggerName, logFilePath);
                 }
                 else
                 {
-                    baseLogPath = logFilePath;
+                    baseLogPath = Path.Combine(exeDirectory, logFilePath);
                 }
-                Directory.CreateDirectory(dir);
-
+                Directory.CreateDirectory(Path.Combine(exeDirectory, dir));
             }
             catch (Exception ex)
             {
