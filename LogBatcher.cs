@@ -222,6 +222,14 @@ namespace LogBatcher
                 {
                     logEntry += Environment.NewLine;
                     int logEntrySize = Encoding.UTF8.GetByteCount(logEntry);
+                    if (logEntrySize > MaxFileSizeInBytes)
+                    {
+                        throw new InvalidOperationException($"Log Entry could " +
+                        	"not be written to file. Log entry size " +
+                        	$"{logEntrySize} bytes is greater than the Maximum " +
+                        	$"File Size {MaxFileSizeInBytes} bytes." +
+                        	$"{Environment.NewLine}{logEntry}");
+                    }
                     if (IsFullBaseLogFile(logEntrySize))
                     {
                         RollFiles();
