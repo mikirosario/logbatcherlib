@@ -17,7 +17,7 @@ namespace LogBatcher
         private const byte LoggerNameMaxLength = 50;
         private const byte LogFilePathMaxLength = 50;
         private const byte TotalLogFilesLowerLimit = 1;
-        private const long FileSizeUpperLimit = 500000;
+        private const long FileSizeUpperLimit = 500000000;
         private const ushort LogDumpFrequencyLowerLimit = 1;
         private readonly ConcurrentQueue<string> _logEntries = new ConcurrentQueue<string>();
         private readonly AutoResetEvent _logSignal = new AutoResetEvent(false);
