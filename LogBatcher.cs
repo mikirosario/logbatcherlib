@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.IO;
 using System.Collections.Concurrent;
 using System.Threading;
+using System.Runtime.InteropServices;
 
 namespace LogBatcher
 {
@@ -14,8 +16,9 @@ namespace LogBatcher
             STOP
         }
         private const string LoggerNameDefault = "LoggerGW";
+        private const string LoggerFileNameDefault = "log";
         private const byte LoggerNameMaxLength = 50;
-        private const byte LogFilePathMaxLength = 50;
+        private const byte LogFilePathMaxLength = 200;
         private const byte TotalLogFilesLowerLimit = 1;
         private const long FileSizeUpperLimit = 500000000;
         private const ushort LogDumpFrequencyLowerLimit = 1;
@@ -86,14 +89,29 @@ namespace LogBatcher
             }
         }
 
+        private static void PrintError(string errorMsg)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine(errorMsg);
+            Console.ResetColor();
+        }
+
+        private static void PrintWarning(string warningMsg)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Error.WriteLine(warningMsg);
+            Console.ResetColor();
+        }
+
         private string ValidateLoggerName(string loggerName)
         {
             string returnValue;
             if (loggerName.Length > LoggerNameMaxLength)
             {
                 returnValue = loggerName.Substring(0, LoggerNameMaxLength);
-                Console.WriteLine($"Invalid Logger Name: {loggerName}.");
-                Console.WriteLine($"Logger Name too long (+{LoggerNameMaxLength}). Truncated to: {returnValue}.");
+                Console.ForegroundColor = ConsoleColor.Red;
+                PrintError($"Invalid Logger Name: {loggerName}.");
+                PrintError($"Logger Name too long (+{LoggerNameMaxLength} characters). Truncated to: {returnValue}.");
             }
             else
             {
@@ -102,31 +120,65 @@ namespace LogBatcher
             if (string.IsNullOrWhiteSpace(returnValue) || loggerName.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
             {
                 returnValue = LoggerNameDefault;
-                Console.WriteLine($"Invalid Logger Name: {loggerName}.");
-                Console.WriteLine($"Logger Name contains invalid characters. Using default Logger Name: {LoggerNameDefault}.");
+                PrintError($"Invalid Logger Name: {loggerName}.");
+                PrintError($"Logger Name contains invalid characters. Using default Logger Name: {LoggerNameDefault}.");
             }
             return returnValue;
         }
 
+        private int CountDirectoriesInPath(string path)
+        {
+           if (string.IsNullOrWhiteSpace(path) || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+           {
+                return -1;
+           }
+           int dirCount = 0;
+           foreach (char c in path)
+           {
+                if (c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar)
+                {
+                    ++dirCount;
+                }
+            }
+           return dirCount;
+        }
+
+        private string CleanPath(string path)
+        {
+            char dirSep = Path.DirectorySeparatorChar;
+            char altDirSep = Path.AltDirectorySeparatorChar;
+
+            string pattern = $"[{Regex.Escape(dirSep.ToString())}{Regex.Escape(altDirSep.ToString())}]+";
+            string replacement = dirSep.ToString();
+            string cleanedPath = Regex.Replace(path, pattern, replacement);
+
+            return cleanedPath;
+        }
+
         /// <summary>
-        /// Validates log file path and creates directories indicated
-        /// therein if needed.
-        /// Returns validated log file path relative to the executable's
-        /// directory.
+        /// Validates <paramref name="logFilePath"/>. Returns validated absolute
+        /// log file path.
         /// </summary>
         /// <remarks>
-        /// Invalid file paths result in LoggerName being
-        /// used as the log directory and file name. Passing a log file path
-        /// without specifying a directory will result in LoggerName being used
-        /// as the log directory and the log file path as the file name.
+        /// Relative paths will be placed in the executable's directory and all
+        /// directories therein will be created if necessary.
         /// 
-        /// Throws all Directory.CreateDirectory exceptions when creation of the
-        /// default fallback directory (the CreateDirectory call inside the
-        /// catch block).
+        /// Absolute paths must reference pre-existing directories, except for
+        /// the last directory in the path, which will be created if necessary.
+        /// 
+        /// Paths without directory information will be used as file names in
+        /// the fallback directory.
+        /// 
+        /// Invalid file paths result in the use of the fallback path
+        /// LoggerName/LoggerFileNameDefault being used as the log file name.
+        /// The fallback path will be placed in the executable's directory.
+        /// 
+        /// Throws all Directory.CreateDirectory and Path.Combine exceptions
+        /// when calls to these method from within the catch block fail. Other
+        /// exceptions are handled and cause the fallback path to be used.
         /// </remarks>
-        /// <param name="logFilePath">Desired relative path to the base log
-        /// file.</param>
-        /// <returns>Validated relative path to the base log file.</returns>
+        /// <param name="logFilePath">Desired path to the base log file.</param>
+        /// <returns>Validated absolute path to the base log file.</returns>
         /// <exception cref="IOException"></exception>
         /// <exception cref="UnauthorizedAccessException"></exception>
         /// <exception cref="ArgumentException"></exception>
@@ -137,40 +189,78 @@ namespace LogBatcher
         private string ValidatePathAndCreateDirectory(string logFilePath)
         {
             string baseLogPath;
-            string dir;
             string exeDirectory = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
             try
             {
-                if (string.IsNullOrWhiteSpace(logFilePath) || logFilePath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+                if (string.IsNullOrWhiteSpace(logFilePath))
                 {
-                    throw new ArgumentException($"Invalid {LoggerName} path {logFilePath}. Invalid characters.");
+                    throw new ArgumentException($"Invalid {LoggerName} Log File Path. No path provided.");
                 }
-                if (logFilePath.Length > LogFilePathMaxLength + 1 + LoggerNameMaxLength)
+                if (logFilePath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
                 {
-                    throw new PathTooLongException($"Invalid {LoggerName} path {logFilePath}. Too long (+{LogFilePathMaxLength}).");
+                    throw new ArgumentException($"Invalid {LoggerName} Log File Path: {logFilePath}. Invalid characters.");
                 }
-                dir = Path.GetDirectoryName(logFilePath);
-                if (dir == null)
+                if (logFilePath.Length > LogFilePathMaxLength)
                 {
-                    throw new ArgumentException($"Malformed {LoggerName} path {logFilePath}. Denotes root directory.");
+                    throw new PathTooLongException($"Invalid {LoggerName} Log File Path: {logFilePath}. Too long (+{LogFilePathMaxLength} characters).");
                 }
-                if (dir.Length < 1) //Directory not provided
+
+                string cleanPath = CleanPath(logFilePath);
+                int dirCount = CountDirectoriesInPath(cleanPath);
+                string file = Path.GetFileName(cleanPath);
+                bool hasFile = !string.IsNullOrWhiteSpace(file);
+                string dir;
+
+                if (dirCount == 0) //Only file info provided
                 {
-                    dir = LoggerName;
-                    baseLogPath = Path.Combine(exeDirectory, LoggerName, logFilePath);
+                    dir = Path.Combine(exeDirectory, LoggerName);
                 }
-                else
+                else //path contains directory information
                 {
-                    baseLogPath = Path.Combine(exeDirectory, logFilePath);
+
+                    //For rooted paths, if only root was specified (no file
+                    //information) it's combined with a fallback file value.
+                    //Otherwise check to make sure the parent directory of the
+                    //last directory in the path exists.
+                    if (Path.IsPathRooted(cleanPath))
+                    {
+                        string parentDir = null;
+                        if (!hasFile) //only directory info provided
+                        {
+                            dir = cleanPath;
+                            file = LoggerFileNameDefault;
+                        }
+                        else //root directory info + file info provided
+                        {
+                            dir = Path.GetDirectoryName(cleanPath);
+                            parentDir = Path.GetDirectoryName(dir);
+                            if (parentDir != null && !Directory.Exists(parentDir)) //parent directories of last absolute directory must already be created
+                            {
+                                throw new DirectoryNotFoundException($"Parent directory {parentDir} does not exist.");
+                            }
+                        }
+                    }
+                    else //relative paths
+                    {
+                        string relativeDirectory = Path.GetDirectoryName(logFilePath);
+                        if (!hasFile) //only directory info provided
+                        {
+                            file = LoggerFileNameDefault;
+                        }
+                        dir = Path.Combine(exeDirectory, relativeDirectory);
+                    }
                 }
-                Directory.CreateDirectory(Path.Combine(exeDirectory, dir));
+                Directory.CreateDirectory(dir);
+                baseLogPath = Path.Combine(dir, file);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"{LoggerName} Path Validation Error: {ex.Message}");
-                Console.WriteLine($"{LoggerName} using default directory path {LoggerName}");
-                Directory.CreateDirectory(LoggerName);
-                baseLogPath = Path.Combine(LoggerName, LoggerName);
+                string fallbackDir = Path.Combine(exeDirectory, LoggerName);
+                string fallbackFile = LoggerFileNameDefault;
+                Directory.CreateDirectory(fallbackDir);
+                baseLogPath = Path.Combine(fallbackDir, fallbackFile);
+                PrintError($"{LoggerName} Path Validation Error: {logFilePath}{Environment.NewLine}{ex.Message}");
+                PrintWarning($"{LoggerName} using default directory path {fallbackDir}");
             }
             return baseLogPath;
         }
@@ -240,7 +330,7 @@ namespace LogBatcher
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Logging error: {ex.Message}");
+                    PrintError($"Logging error: {ex.Message}");
                 }
             }
         }

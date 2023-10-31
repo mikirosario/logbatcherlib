@@ -1,0 +1,29 @@
+﻿Changelog
+
+Versión 0.1 - 0.5:
+
+- Al cerrar la aplicación con logs cacheados en RAM, estos no se registraban en
+los archivos. Ahora se registran correctamente.
+
+- Anteriormente, la carpeta de logs se generaba en el directorio de trabajo
+actual desde el se ejecutaba la aplicación. Ahora la carpeta se genera en el
+directorio donde reside el ejecutable.
+
+- Ahora se puede configurar el Logger mediante el archivo config.json.
+
+- Tamaño máximo de un archivo de log subido a 500MB.
+
+- Tamaño por defecto de un archivo de log subido a 100MB.
+
+- Número de archivos de log rotatorios generados por defecto subido a 100.
+
+Versión 0.6
+
+- Ahora se admiten las rutas absolutas como valores de "LogFilePath" en el
+config.json.
+
+- Ahora los errores se muestran en rojo y las advertencias en amarillo.
+
+- Tamaño máximo de "LogFilePath" subdo a 200 caracteres.
+
+- Changelog añadido.
