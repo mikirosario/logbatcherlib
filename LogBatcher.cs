@@ -5,6 +5,9 @@ using System.IO;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Runtime.InteropServices;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace LogBatcher
 {
@@ -25,6 +28,7 @@ namespace LogBatcher
         private readonly ConcurrentQueue<string> _logEntries = new ConcurrentQueue<string>();
         private readonly AutoResetEvent _logSignal = new AutoResetEvent(false);
         private readonly AutoResetEvent _stopSignal = new AutoResetEvent(false);
+        private readonly LinkedList<Mutex> _mutexList = new LinkedList<Mutex>();
         private readonly string _loggerName;
         private readonly string _baseLogFilePath;
         private long _baseLogFileSize = 0;
@@ -32,7 +36,7 @@ namespace LogBatcher
         private ushort _logDumpFrequency;
         private byte _totalLogFiles;
         private volatile bool _stop = false;
-        private Thread _loggingThread;
+        private readonly Thread _loggingThread;        
 
         public string LoggerName
         {
@@ -126,7 +130,7 @@ namespace LogBatcher
             return returnValue;
         }
 
-        private int CountDirectoriesInPath(string path)
+        private static int CountDirectoriesInPath(string path)
         {
            if (string.IsNullOrWhiteSpace(path) || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
            {
@@ -143,7 +147,7 @@ namespace LogBatcher
            return dirCount;
         }
 
-        private string CleanPath(string path)
+        private static string CleanPath(string path)
         {
             char dirSep = Path.DirectorySeparatorChar;
             char altDirSep = Path.AltDirectorySeparatorChar;
@@ -551,6 +555,72 @@ namespace LogBatcher
                 if (File.Exists(tmpFile))
                 {
                     File.Move(tmpFile, persistentFile);
+                }
+            }
+        }
+
+        /* MUTEX HANDLING */
+        /// <summary>
+        /// Attempts to lock the mutexes needed to operate on the given file paths. Returns a bool
+        /// indicating whether or not the attempt was successful.
+        /// </summary>
+        private bool TryGetMutexes(string[] fullFilePaths)
+        {
+            if (fullFilePaths?.Length < 1)
+            {
+                throw new ArgumentNullException(nameof(fullFilePaths));
+            }
+            bool gotMutexes = false;
+            try
+            {
+                foreach (string filePath in fullFilePaths)
+                {
+                    _mutexList.AddLast(new Mutex(false, filePath));
+                }
+                gotMutexes = Mutex.WaitAll(_mutexList.ToArray(), 0);
+            }
+            finally
+            {
+                if (!gotMutexes && _mutexList.Count > 0)
+                {
+                    ClearAllMutexes(false);
+                }
+            }
+            return gotMutexes;
+        }
+
+        /// <summary>
+        /// Disposes and clears all mutexes in the mutex list.
+        /// If 'mutexesAreOwned' is true, the mutexes will be released before disposal.
+        private void ClearAllMutexes(bool mutexesAreOwned)
+        {
+            void DisposeMutex(Mutex mutex)
+            {
+                mutex.Dispose();
+            }
+            void ReleaseAndDisposeMutex(Mutex mutex)
+            {
+                mutex.ReleaseMutex();
+                DisposeMutex(mutex);
+            }
+            Action<Mutex> disposalAction = mutexesAreOwned ? (Action<Mutex>)ReleaseAndDisposeMutex : DisposeMutex;            
+            while (_mutexList.Count > 0)
+            {
+                try
+                {
+                    disposalAction(_mutexList.First.Value);                    
+                }
+                catch (ApplicationException)
+                {
+                    Console.WriteLine("Tried to release unowned mutex!");
+                }
+                catch (ObjectDisposedException)
+                {
+                    Console.WriteLine("Tried to dispose a mutex that was already disposed!")
+                }
+                finally
+                {
+                    _mutexList.RemoveFirst();
                 }
             }
         }
