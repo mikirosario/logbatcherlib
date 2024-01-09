@@ -11,7 +11,7 @@ using System.Linq;
 
 namespace LogBatcher
 {
-    public class Logger
+    public class Logger : IDisposable
     {
         private enum Signal
         {
@@ -25,6 +25,7 @@ namespace LogBatcher
             FINISHED_ERROR,
             FINISHED_SUCCESS
         }
+        private const string ConsoleMessagePrefix = "[LogBatcher] ";
         private const string LoggerNameDefault = "LoggerGW";
         private const string LoggerFileNameDefault = "log";
         private const byte LoggerNameMaxLength = 50;
@@ -42,16 +43,14 @@ namespace LogBatcher
         private long _maxFileSizeInBytes;
         private ushort _logDumpFrequency;
         private byte _totalLogFiles;
+        private bool _disposed = false;
         private volatile bool _errorFlag = false;
         private volatile bool _stop = false;
         private readonly Thread _loggingThread;
 
         public LoggerState State { get => GetLoggerState(); }
 
-        public string LoggerName
-        {
-            get => _loggerName;
-        }
+        public string LoggerName { get => _loggerName; }
 
         public long MaxFileSizeInBytes
         {
@@ -84,36 +83,91 @@ namespace LogBatcher
             _loggingThread.Start();            
         }
 
-        public void Stop()
+        /* DISPOSE PATTERN */
+        protected virtual void Dispose(bool disposing)
         {
-            _stop = true;
-            _stopSignal.Set(); // Signal the logger thread to stop
-            _loggingThread.Join(); // Wait for the logger thread to finish
-            Console.WriteLine("Logger Stopped");
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    Stop();
+                    _logSignal?.Dispose();
+                    _stopSignal?.Dispose();
+                }
+                _disposed = true;
+            }
         }
 
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        /// <summary>
+        /// Affixes a timestamp indicating the system date and time to your message in the
+        /// following format:
+        /// "1970/01/31 15:30:45 | [message]".
+        /// </summary>
+        public static string AffixTimestamp(string message)
+        {
+            return $"{DateTime.Now:yyyyMMddHHmmss} | {SanitizeLogString(message)}";
+        }
+
+        public void Stop()
+        {
+            if (!_stop)
+            {
+                _stop = true;
+                _stopSignal.Set(); // Signal the logger thread to stop
+                _loggingThread?.Join(); // Wait for the logger thread to finish
+                PrintInfo($"{LoggerName} stopped");
+            }
+        }
+
+        /// <summary>
+        /// Logs a message to file.
+        /// </summary>
         public void Log(string message)
         {
-            string logMessage = $"{DateTime.Now}: {message.TrimEnd('\0')}";
-            Console.WriteLine($"############# {LoggerName} logged: {logMessage}");
-            _logEntries.Enqueue(logMessage);
+            _logEntries.Enqueue(SanitizeLogString(message));
             if (_logEntries.Count >= LogDumpFrequency)
             {
                 _logSignal.Set();
             }
         }
 
+        /// <summary>
+        /// Logs a message to console.
+        /// </summary>
+        public void LogConsole(string message)
+        {
+            Console.WriteLine($"{LoggerName} logged: {SanitizeLogString(message)}");
+        }
+
+        private static string SanitizeLogString(string logString)
+        {
+            return logString.Trim('\0');
+        }
+
         private static void PrintError(string errorMsg)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.Error.WriteLine(errorMsg);
+            Console.Error.WriteLine(GenerateConsoleMessage(errorMsg));
             Console.ResetColor();
         }
 
         private static void PrintWarning(string warningMsg)
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.Error.WriteLine(warningMsg);
+            Console.Error.WriteLine(GenerateConsoleMessage(warningMsg));
+            Console.ResetColor();
+        }
+
+        private static void PrintInfo(string infoMsg)
+        {
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine(GenerateConsoleMessage(infoMsg));
             Console.ResetColor();
         }
 
@@ -123,9 +177,8 @@ namespace LogBatcher
             if (loggerName.Length > LoggerNameMaxLength)
             {
                 returnValue = loggerName.Substring(0, LoggerNameMaxLength);
-                Console.ForegroundColor = ConsoleColor.Red;
                 PrintError($"Invalid Logger Name: {loggerName}.");
-                PrintError($"Logger Name too long (+{LoggerNameMaxLength} characters). Truncated to: {returnValue}.");
+                PrintWarning($"Logger Name too long (+{LoggerNameMaxLength} characters). Truncated to: {returnValue}.");
             }
             else
             {
@@ -135,7 +188,7 @@ namespace LogBatcher
             {
                 returnValue = LoggerNameDefault;
                 PrintError($"Invalid Logger Name: {loggerName}.");
-                PrintError($"Logger Name contains invalid characters. Using default Logger Name: {LoggerNameDefault}.");
+                PrintWarning($"Logger Name contains invalid characters. Using default Logger Name: {LoggerNameDefault}.");
             }
             return returnValue;
         }
@@ -177,6 +230,11 @@ namespace LogBatcher
             mutexNameBuilder.Append(sanitizedPathName);
 
             return mutexNameBuilder.ToString();
+        }
+
+        private static string GenerateConsoleMessage(string message)
+        {
+            return ConsoleMessagePrefix + message;
         }
 
         private LoggerState GetLoggerState()
@@ -343,13 +401,13 @@ namespace LogBatcher
                 {
                     ThreadWriteAllLogsToFile();
                 }
-                Console.WriteLine("Saving cached logs to file and closing...");
+                PrintInfo($"{LoggerName} saving cached logs to file and closing...");
                 ThreadWriteAllLogsToFile();
             }
             catch (Exception ex)
             {
                 _errorFlag = true;
-                Console.Error.WriteLine($"Error in ThreadLogQueueMonitor: {ex.Message}");
+                PrintError($"{LoggerName} Error in ThreadLogQueueMonitor: {ex.Message}");
             }
             finally
             {
@@ -383,7 +441,7 @@ namespace LogBatcher
                 }
                 catch (Exception ex)
                 {
-                    PrintError($"Logging error: {ex.Message}");
+                    PrintError($"{LoggerName} Logging error: {ex.Message}");
                 }
             }
         }
@@ -661,11 +719,11 @@ namespace LogBatcher
                 }
                 catch (ApplicationException)
                 {
-                    Console.WriteLine("Tried to release unowned mutex!");
+                    PrintWarning($"{LoggerName} Tried to release unowned mutex!");
                 }
                 catch (ObjectDisposedException)
                 {
-                    Console.WriteLine("Tried to dispose a mutex that was already disposed!");
+                    PrintWarning($"{LoggerName} Tried to dispose a mutex that was already disposed!");
                 }
                 finally
                 {
