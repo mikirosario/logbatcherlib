@@ -18,10 +18,17 @@ namespace LogBatcher
             LOG,
             STOP
         }
+        public enum LoggerState
+        {
+            UNSTARTED,
+            ACTIVE,
+            FINISHED_ERROR,
+            FINISHED_SUCCESS
+        }
         private const string LoggerNameDefault = "LoggerGW";
         private const string LoggerFileNameDefault = "log";
         private const byte LoggerNameMaxLength = 50;
-        private const byte LogFilePathMaxLength = 200;
+        private const byte LogFilePathMaxLength = 200; // Should not be greater than 260 for cross-platform compatibility
         private const byte TotalLogFilesLowerLimit = 1;
         private const long FileSizeUpperLimit = 500000000;
         private const ushort LogDumpFrequencyLowerLimit = 1;
@@ -35,8 +42,11 @@ namespace LogBatcher
         private long _maxFileSizeInBytes;
         private ushort _logDumpFrequency;
         private byte _totalLogFiles;
+        private volatile bool _errorFlag = false;
         private volatile bool _stop = false;
-        private readonly Thread _loggingThread;        
+        private readonly Thread _loggingThread;
+
+        public LoggerState State { get => GetLoggerState(); }
 
         public string LoggerName
         {
@@ -71,7 +81,7 @@ namespace LogBatcher
             _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
             _loggingThread = new Thread(ThreadLogQueueMonitor);
             _loggingThread.IsBackground = true;
-            _loggingThread.Start();
+            _loggingThread.Start();            
         }
 
         public void Stop()
@@ -157,6 +167,27 @@ namespace LogBatcher
             string cleanedPath = Regex.Replace(path, pattern, replacement);
 
             return cleanedPath;
+        }
+
+        private static string ConvertFilePathToMutexName(string filePath)
+        {
+            StringBuilder mutexNameBuilder = new StringBuilder("logbatcherlib-");
+            string sanitizedPathName = filePath.Replace($@"{Path.DirectorySeparatorChar}", string.Empty).Replace($@"{Path.AltDirectorySeparatorChar}", string.Empty);
+
+            mutexNameBuilder.Append(sanitizedPathName);
+
+            return mutexNameBuilder.ToString();
+        }
+
+        private LoggerState GetLoggerState()
+        {
+            if (_loggingThread == null || _loggingThread.ThreadState == ThreadState.Unstarted )
+                return LoggerState.UNSTARTED;
+            if (_loggingThread.IsAlive)
+                return LoggerState.ACTIVE;
+            if (_errorFlag)
+                return LoggerState.FINISHED_ERROR;
+            return LoggerState.FINISHED_SUCCESS;            
         }
 
         /// <summary>
@@ -300,12 +331,30 @@ namespace LogBatcher
 
         private void ThreadLogQueueMonitor()
         {
-            while (!_stop && ThreadWaitSignal() != Signal.STOP)
+            bool mutexesAreOwned = false;
+            try
             {
+                mutexesAreOwned = TryGetMutexes(GetAllPossibleFilePathsAsMutexNames());
+                if (!mutexesAreOwned)
+                {
+                    throw new FileAccessConflictException("It appears that another thread or process is accessing these files. Close it or change the file path.");
+                }
+                while (!_stop && ThreadWaitSignal() != Signal.STOP)
+                {
+                    ThreadWriteAllLogsToFile();
+                }
+                Console.WriteLine("Saving cached logs to file and closing...");
                 ThreadWriteAllLogsToFile();
             }
-            Console.WriteLine("Saving cached logs to file and closing...");
-            ThreadWriteAllLogsToFile();
+            catch (Exception ex)
+            {
+                _errorFlag = true;
+                Console.Error.WriteLine($"Error in ThreadLogQueueMonitor: {ex.Message}");
+            }
+            finally
+            {
+                ClearAllMutexes(mutexesAreOwned);
+            }
         }
 
         private void ThreadWriteAllLogsToFile()
@@ -418,8 +467,8 @@ namespace LogBatcher
 
         /// <summary>
         /// Tries to move the temporary log files up one slot, such that
-        /// base_log_file.tmp becomes log_file_0.tmp, log_file_0.tmp becomes
-        /// log_file_1.tmp, etc., until the total number of temporary log files
+        /// base_log_file.tmp becomes log_file.0.tmp, log_file.0.tmp becomes
+        /// log_file.1.tmp, etc., until the total number of temporary log files
         /// equals TotalLogFiles. This method will do nothing if TotalLogFiles
         /// is less than 2.
         /// Throws an exception if unsuccessful for any reason.
@@ -561,21 +610,21 @@ namespace LogBatcher
 
         /* MUTEX HANDLING */
         /// <summary>
-        /// Attempts to lock the mutexes needed to operate on the given file paths. Returns a bool
-        /// indicating whether or not the attempt was successful.
+        /// Attempts to lock all the named mutexes referenced in the 'mutexNames' array. Returns a
+        /// bool indicating whether or not the attempt was successful.
         /// </summary>
-        private bool TryGetMutexes(string[] fullFilePaths)
+        private bool TryGetMutexes(string[] mutexNames)
         {
-            if (fullFilePaths?.Length < 1)
+            if (mutexNames?.Length < 1)
             {
-                throw new ArgumentNullException(nameof(fullFilePaths));
+                throw new ArgumentNullException(nameof(mutexNames));
             }
             bool gotMutexes = false;
             try
             {
-                foreach (string filePath in fullFilePaths)
+                foreach (string mutexName in mutexNames)
                 {
-                    _mutexList.AddLast(new Mutex(false, filePath));
+                    _mutexList.AddLast(new Mutex(false, mutexName));
                 }
                 gotMutexes = Mutex.WaitAll(_mutexList.ToArray(), 0);
             }
@@ -616,13 +665,31 @@ namespace LogBatcher
                 }
                 catch (ObjectDisposedException)
                 {
-                    Console.WriteLine("Tried to dispose a mutex that was already disposed!")
+                    Console.WriteLine("Tried to dispose a mutex that was already disposed!");
                 }
                 finally
                 {
                     _mutexList.RemoveFirst();
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns an array containing a unique valid mutex name for every file path subject to
+        /// read/write operations by this Logger instance.
+        /// </summary>
+        private string[] GetAllPossibleFilePathsAsMutexNames()
+        {
+            string[] mutexNames = new string[TotalLogFiles * 2];
+            int IndexOf(int logFileNumber) { return 2 * logFileNumber; }
+            string baseName = mutexNames[0] = ConvertFilePathToMutexName(_baseLogFilePath);
+            mutexNames[1] = $"{baseName}.tmp";
+            for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
+            {
+                mutexNames[IndexOf(logFileNum)] = $"{baseName}.{logFileNum}";
+                mutexNames[IndexOf(logFileNum) + 1] = $"{baseName}.{logFileNum}.tmp";
+            }
+            return mutexNames;
         }
     }
 }
