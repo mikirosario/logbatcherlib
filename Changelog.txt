@@ -27,3 +27,33 @@ config.json.
 - Tamaño máximo de "LogFilePath" subdo a 200 caracteres.
 
 - Changelog añadido.
+
+Versión 0.7
+
+- El método Log ya no loguea a consola, solo a archivo.
+
+- Se añade el método LogConsole, que solo loguea a consola.
+
+- Se suprime el timestamp automático en logueo de mensajes.
+
+- Se expone un nuevo método AffixTimestamp que le da al usuario la opción de poner un timestamp
+delante del mensaje.
+
+- Se usan mutex para restringir el acceso a los archivos. Ahora si dos o más instancias de Logger
+intentan acceder a los mismos archivos a la vez, aunque sea desde distintos procesos, todas menos
+una fallarán e imprimirán un mensaje de error a consola.
+
+- La clase Logger ahora implementa IDisposable y puede usarse en un bloque using().
+
+- Se liberan los recursos de los AutoResetEvents explícitamente.
+
+- Se homogeniza el criterio de los mensajes de LogBatcher enviados a consola. El prefijo
+[LogBatcher] indica su procedencia.
+
+Versión 0.8
+
+- Se ofrece la posibilidad de serializar los objetos a JSON y guardarlos en archivo, con o supresión de propiedades cuyos valores son los originales de su tipo y/o null.
+
+- Cualquier excepción al instanciarse la clase Logger se gestiona imprimiendo un mensaje de error a consola.
+
+- Se incorpora un packages.config para gestionar dependencias y se especifica .NETFramework 4.7 como target.

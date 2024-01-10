@@ -4,10 +4,10 @@ using System.Text.RegularExpressions;
 using System.IO;
 using System.Collections.Concurrent;
 using System.Threading;
-using System.Runtime.InteropServices;
-using System.Collections;
+using System.Text.Json;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace LogBatcher
 {
@@ -25,6 +25,12 @@ namespace LogBatcher
             FINISHED_ERROR,
             FINISHED_SUCCESS
         }
+        public enum JsonOptions
+        {
+            INCLUDE_ALL,
+            IGNORE_DEFAULT_VALUES,
+            IGNORE_NULL_VALUES
+        }
         private const string ConsoleMessagePrefix = "[LogBatcher] ";
         private const string LoggerNameDefault = "LoggerGW";
         private const string LoggerFileNameDefault = "log";
@@ -33,6 +39,9 @@ namespace LogBatcher
         private const byte TotalLogFilesLowerLimit = 1;
         private const long FileSizeUpperLimit = 500000000;
         private const ushort LogDumpFrequencyLowerLimit = 1;
+        private readonly JsonSerializerOptions _jsonSerializerConfigIncludeAll = new JsonSerializerOptions() { WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.Never };
+        private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreDefaultValues = new JsonSerializerOptions() { WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault };
+        private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreNullValues = new JsonSerializerOptions() { WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
         private readonly ConcurrentQueue<string> _logEntries = new ConcurrentQueue<string>();
         private readonly AutoResetEvent _logSignal = new AutoResetEvent(false);
         private readonly AutoResetEvent _stopSignal = new AutoResetEvent(false);
@@ -72,15 +81,22 @@ namespace LogBatcher
 
         public Logger(string loggerName, string logFilePath, long maxLogFileSizeInBytes, byte totalLogFiles, ushort logDumpFrequency)
         {
-            MaxFileSizeInBytes = maxLogFileSizeInBytes;
-            LogDumpFrequency = logDumpFrequency;
-            TotalLogFiles = totalLogFiles;
-            _loggerName = ValidateLoggerName(loggerName);
-            _baseLogFilePath = ValidatePathAndCreateDirectory(logFilePath);
-            _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
-            _loggingThread = new Thread(ThreadLogQueueMonitor);
-            _loggingThread.IsBackground = true;
-            _loggingThread.Start();            
+            try
+            {
+                MaxFileSizeInBytes = maxLogFileSizeInBytes;
+                LogDumpFrequency = logDumpFrequency;
+                TotalLogFiles = totalLogFiles;
+                _loggerName = ValidateLoggerName(loggerName);
+                _baseLogFilePath = ValidatePathAndCreateDirectory(logFilePath);
+                _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
+                _loggingThread = new Thread(ThreadLogQueueMonitor);
+                _loggingThread.IsBackground = true;
+                _loggingThread.Start();
+            }
+            catch (Exception ex)
+            {
+                PrintError(ex.Message);
+            }
         }
 
         /* DISPOSE PATTERN */
@@ -143,6 +159,72 @@ namespace LogBatcher
         public void LogConsole(string message)
         {
             Console.WriteLine($"{LoggerName} logged: {SanitizeLogString(message)}");
+        }
+
+        /// <summary>
+        /// Logs an object to file as a serialized, newline-delimited JSON string. The 'option'
+        /// parameter can be passed to ignore any properties in the object set to their default
+        /// values or set to null and thus compress the size of the log. By default, all properties
+        /// are included.
+        /// </summary>
+        /// <remarks>
+        /// Note that this method makes a run-time decision, which does involve some additional CPU
+        /// overhead. If the option is known at compile-time, the option-specific methods
+        /// (LogJsonIncludeAll, etc.) can be called directly.
+        /// </remarks>
+        public void LogJson(object obj, JsonOptions option = JsonOptions.INCLUDE_ALL)
+        {
+            switch (option)
+            {
+                case JsonOptions.IGNORE_DEFAULT_VALUES:
+                    LogJsonIgnoreDefaults(obj);
+                    break;
+                case JsonOptions.IGNORE_NULL_VALUES:
+                    LogJsonIgnoreNulls(obj);
+                    break;
+                default:
+                    LogJsonIncludeAll(obj);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Logs an object to file as a serialized, newline-delimited JSON string, including all
+        /// properties.
+        /// </summary>
+        public void LogJsonIncludeAll(object obj)
+        {
+            Log(SerializeToJson(obj, _jsonSerializerConfigIncludeAll));
+        }
+
+        /// <summary>
+        /// Logs an object to file as a serialized, newline-delimited JSON string, excluding all
+        /// properties set to their default values.
+        /// </summary>
+        public void LogJsonIgnoreDefaults(object obj)
+        {
+            Log(SerializeToJson(obj, _jsonSerializerConfigIgnoreDefaultValues));
+        }
+
+        /// <summary>
+        /// Logs an object to file as a serialized, newline-delimited JSON string, excluding all
+        /// properties set to null.
+        /// </summary>
+        public void LogJsonIgnoreNulls(object obj)
+        {
+            Log(SerializeToJson(obj, _jsonSerializerConfigIgnoreNullValues));
+        }
+
+        /// <summary>
+        /// Serializes an object as a JSON string, applying the JsonSerializerOptions passed in the
+        /// 'options' parameter, or the default options if none is passed.
+        /// </summary>
+        /// <remarks>
+        /// JsonSerializerOptions depends on the System.Text.Json library.
+        /// </remarks>
+        public static string SerializeToJson(object obj, JsonSerializerOptions options = null)
+        {
+            return JsonSerializer.Serialize(obj, options);
         }
 
         private static string SanitizeLogString(string logString)
@@ -214,7 +296,6 @@ namespace LogBatcher
         {
             char dirSep = Path.DirectorySeparatorChar;
             char altDirSep = Path.AltDirectorySeparatorChar;
-
             string pattern = $"[{Regex.Escape(dirSep.ToString())}{Regex.Escape(altDirSep.ToString())}]+";
             string replacement = dirSep.ToString();
             string cleanedPath = Regex.Replace(path, pattern, replacement);
