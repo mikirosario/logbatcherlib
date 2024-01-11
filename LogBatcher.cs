@@ -25,11 +25,11 @@ namespace LogBatcher
             FINISHED_ERROR,
             FINISHED_SUCCESS
         }
-        public enum JsonOptions
+        public enum JsonExclusionOptions
         {
             INCLUDE_ALL,
-            IGNORE_DEFAULT_VALUES,
-            IGNORE_NULL_VALUES
+            EXCLUDE_NULL_VALUES,
+            EXCLUDE_DEFAULT_VALUES,
         }
         private const string ConsoleMessagePrefix = "[LogBatcher] ";
         private const string LoggerNameDefault = "LoggerGW";
@@ -39,6 +39,10 @@ namespace LogBatcher
         private const byte TotalLogFilesLowerLimit = 1;
         private const long FileSizeUpperLimit = 500000000;
         private const ushort LogDumpFrequencyLowerLimit = 1;
+        private readonly object _internalFileLock = new object();
+        private readonly JsonSerializerOptions _jsonSerializerConfigIncludeAllPretty = new JsonSerializerOptions() { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never };
+        private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreDefaultValuesPretty = new JsonSerializerOptions() { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault };
+        private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreNullValuesPretty = new JsonSerializerOptions() { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
         private readonly JsonSerializerOptions _jsonSerializerConfigIncludeAll = new JsonSerializerOptions() { WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.Never };
         private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreDefaultValues = new JsonSerializerOptions() { WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault };
         private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreNullValues = new JsonSerializerOptions() { WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
@@ -172,20 +176,66 @@ namespace LogBatcher
         /// overhead. If the option is known at compile-time, the option-specific methods
         /// (LogJsonIncludeAll, etc.) can be called directly.
         /// </remarks>
-        public void LogJson(object obj, JsonOptions option = JsonOptions.INCLUDE_ALL)
+        public void LogJson(object obj, JsonExclusionOptions option = JsonExclusionOptions.INCLUDE_ALL)
         {
             switch (option)
             {
-                case JsonOptions.IGNORE_DEFAULT_VALUES:
-                    LogJsonIgnoreDefaults(obj);
-                    break;
-                case JsonOptions.IGNORE_NULL_VALUES:
+                case JsonExclusionOptions.EXCLUDE_NULL_VALUES:
                     LogJsonIgnoreNulls(obj);
+                    break;
+                case JsonExclusionOptions.EXCLUDE_DEFAULT_VALUES:
+                    LogJsonIgnoreDefaults(obj);
                     break;
                 default:
                     LogJsonIncludeAll(obj);
                     break;
             }
+        }
+
+        /// <summary>
+        /// Logs an object to console as a JSON string.
+        /// </summary>
+        /// <remarks>
+        /// The 'exclusionOption' parameter can be passed to exclude any properties in the object
+        /// that are set to their default values or to null. The 'unescape' parameter can be set to
+        /// false to get valid JSON output or to true to resolve any escaped character sequences
+        /// into human-readable characters. The 'prettyPrint' parameter can be set to false to have
+        /// the JSON displayed in a single line or to true to have it displayed in multiple lines.
+        /// By default, all properties are included, escaped characters are made human-readable and
+        /// the output is pretty-printed.
+        /// </remarks>
+        public void LogJsonConsole(object obj, JsonExclusionOptions exclusionOption = JsonExclusionOptions.INCLUDE_ALL, bool unescape = true, bool prettyPrint = true)
+        {
+            JsonSerializerOptions[] jsonOptionsArray = new JsonSerializerOptions[3];
+            switch (prettyPrint)
+            {
+                case true:
+                    jsonOptionsArray[0] = _jsonSerializerConfigIgnoreDefaultValuesPretty;
+                    jsonOptionsArray[1] = _jsonSerializerConfigIgnoreNullValuesPretty;
+                    jsonOptionsArray[2] = _jsonSerializerConfigIncludeAllPretty;
+                    break;
+                default:
+                    jsonOptionsArray[0] = _jsonSerializerConfigIgnoreDefaultValues;
+                    jsonOptionsArray[1] = _jsonSerializerConfigIgnoreNullValues;
+                    jsonOptionsArray[2] = _jsonSerializerConfigIncludeAll;
+                    break;
+            }
+            string stringifiedJson;
+            switch (exclusionOption)
+            {
+                case JsonExclusionOptions.EXCLUDE_DEFAULT_VALUES:
+                    stringifiedJson = SerializeToJson(obj, jsonOptionsArray[0]);
+                    break;
+                case JsonExclusionOptions.EXCLUDE_NULL_VALUES:
+                    stringifiedJson = SerializeToJson(obj, jsonOptionsArray[1]);
+                    break;
+                default:
+                    stringifiedJson = SerializeToJson(obj, jsonOptionsArray[2]);
+                    break;
+            }
+            if (unescape == true)
+                stringifiedJson = Regex.Unescape(stringifiedJson);
+            LogConsole(stringifiedJson);
         }
 
         /// <summary>
@@ -512,13 +562,16 @@ namespace LogBatcher
                         	$"File Size {MaxFileSizeInBytes} bytes." +
                         	$"{Environment.NewLine}{logEntry}");
                     }
-                    if (IsFullBaseLogFile(logEntrySize))
+                    lock (_internalFileLock)
                     {
-                        RollFiles();
-                        _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
+                        if (IsFullBaseLogFile(logEntrySize))
+                        {
+                            RollFiles();
+                            _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
+                        }
+                        File.AppendAllText(_baseLogFilePath, logEntry, Encoding.UTF8);
+                        _baseLogFileSize += logEntrySize;
                     }
-                    File.AppendAllText(_baseLogFilePath, logEntry, Encoding.UTF8);
-                    _baseLogFileSize += logEntrySize;
                 }
                 catch (Exception ex)
                 {
@@ -752,9 +805,9 @@ namespace LogBatcher
         /// Attempts to lock all the named mutexes referenced in the 'mutexNames' array. Returns a
         /// bool indicating whether or not the attempt was successful.
         /// </summary>
-        private bool TryGetMutexes(string[] mutexNames)
+        private bool TryGetMutexes(IEnumerable<string> mutexNames)
         {
-            if (mutexNames?.Length < 1)
+            if (mutexNames?.Count() < 1)
             {
                 throw new ArgumentNullException(nameof(mutexNames));
             }
@@ -817,7 +870,7 @@ namespace LogBatcher
         /// Returns an array containing a unique valid mutex name for every file path subject to
         /// read/write operations by this Logger instance.
         /// </summary>
-        private string[] GetAllPossibleFilePathsAsMutexNames()
+        private IEnumerable<string> GetAllPossibleFilePathsAsMutexNames()
         {
             string[] mutexNames = new string[TotalLogFiles * 2];
             int IndexOf(int logFileNumber) { return 2 * logFileNumber; }
@@ -829,6 +882,70 @@ namespace LogBatcher
                 mutexNames[IndexOf(logFileNum) + 1] = $"{baseName}.{logFileNum}.tmp";
             }
             return mutexNames;
+        }
+
+        public IEnumerable<string> AllPossibleLogFilePaths { get => GetAllPossibleLogFilePaths(); }
+        public IEnumerable<string> AllExistingLogFiles { get => GetAllExistingLogFiles(); }
+        public IEnumerable<string> AllLogs { get => GetAllLogs(); }
+
+        private IEnumerable<string> GetAllPossibleLogFilePaths()
+        {
+            yield return _baseLogFilePath;
+            for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
+            {
+                yield return $"{_baseLogFilePath}.{logFileNum}";
+            }
+        }
+
+        private IEnumerable<string> GetAllExistingLogFiles()
+        {
+            foreach (string filePath in AllPossibleLogFilePaths)
+            {
+                if (File.Exists(filePath))
+                {
+                    yield return filePath;
+                }
+            }
+        }
+
+        public IEnumerable<string> GetAllLogs()
+        {
+            lock (_internalFileLock)
+            {
+                foreach (string filePath in AllExistingLogFiles)
+                {
+                    foreach (string line in File.ReadLines(filePath))
+                    {
+                        yield return line;
+                    }
+                }
+            }
+        }
+
+
+        private bool TryDeserializeJson<T>(string jsonString, out T deserializedJson)
+        {
+            try
+            {
+                deserializedJson = JsonSerializer.Deserialize<T>(jsonString);
+                return true;
+            }
+            catch (JsonException)
+            {
+                deserializedJson = default;
+                return false;
+            }
+        }
+
+        public IEnumerable<T> GetAllDeserializedJsonLogs<T>()
+        {
+            foreach (string log in AllLogs)
+            {
+                if (TryDeserializeJson(log, out T deserializedJson))
+                {
+                    yield return deserializedJson;
+                }
+            }
         }
     }
 }
