@@ -31,9 +31,16 @@ namespace LogBatcher
             EXCLUDE_NULL_VALUES,
             EXCLUDE_DEFAULT_VALUES,
         }
+        public enum LogFileType
+        {
+            PERSISTENT,
+            TEMPORARY
+        }
         private const string ConsoleMessagePrefix = "[LogBatcher] ";
         private const string LoggerNameDefault = "LoggerGW";
         private const string LoggerFileNameDefault = "log";
+        private const string LoggerFileNameExtension = ".log";
+        private const string LoggerTmpFileNameExtension = LoggerFileNameExtension + ".tmp";
         private const byte LoggerNameMaxLength = 50;
         private const byte LogFilePathMaxLength = 200; // Should not be greater than 260 for cross-platform compatibility
         private const byte TotalLogFilesLowerLimit = 1;
@@ -51,7 +58,13 @@ namespace LogBatcher
         private readonly AutoResetEvent _stopSignal = new AutoResetEvent(false);
         private readonly LinkedList<Mutex> _mutexList = new LinkedList<Mutex>();
         private readonly string _loggerName;
-        private readonly string _baseLogFilePath;
+        private readonly string[] _allPossiblePersistentLogFilePaths;
+        private readonly string[] _allPossibleTemporaryLogFilePaths;
+        private readonly string[] _allPossibleFilePathsAsMutexNames;
+        private readonly string _baseLogFilePathNoExtension;
+        private readonly string _baseLogFilePathWithExtension;
+        private readonly string _baseLogTmpFilePathWithExtension;
+        private readonly string _baseLogFileMutexName;
         private long _baseLogFileSize = 0;
         private long _maxFileSizeInBytes;
         private ushort _logDumpFrequency;
@@ -61,8 +74,6 @@ namespace LogBatcher
         private volatile bool _stop = false;
         private readonly Thread _loggingThread;
 
-        private IEnumerable<string> AllPossiblePersistentLogFilePaths { get => GetAllPossiblePersistentLogFilePaths(); }
-        private IEnumerable<string> AllPossibleTmpLogFilePaths { get => GetAllPossibleTmpLogFilePaths(); }
         private IEnumerable<string> AllExistingPersistentLogFilePaths { get => GetAllExistingPersistentLogFilePaths(); }
         public IEnumerable<string> AllLogs { get => ReadAllLogs(); }
         public LoggerState State { get => GetLoggerState(); }
@@ -91,7 +102,12 @@ namespace LogBatcher
                 LogDumpFrequency = logDumpFrequency;
                 TotalLogFiles = totalLogFiles;
                 _loggerName = ValidateLoggerName(loggerName);
-                _baseLogFilePath = ValidatePathAndCreateDirectory(logFilePath);
+                _baseLogFilePathNoExtension = ValidatePathAndCreateDirectory(logFilePath);
+                _allPossiblePersistentLogFilePaths = GenerateAllPossiblePersistentLogFilePaths();
+                _allPossibleTemporaryLogFilePaths = GenerateAllPossibleTmpLogFilePaths();
+                _allPossibleFilePathsAsMutexNames = GenerateAllPossibleFilePathsAsMutexNames();
+                _baseLogFilePathWithExtension = _allPossiblePersistentLogFilePaths[0];
+                _baseLogTmpFilePathWithExtension = _allPossibleTemporaryLogFilePaths[0];
                 _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
                 _loggingThread = new Thread(ThreadLogQueueMonitor);
                 _loggingThread.IsBackground = true;
@@ -491,7 +507,7 @@ namespace LogBatcher
 
         private long QueryFileSystemForBaseLogFileSize()
         {
-            return File.Exists(_baseLogFilePath) ? new FileInfo(_baseLogFilePath).Length : 0;
+            return File.Exists(_baseLogFilePathWithExtension) ? new FileInfo(_baseLogFilePathWithExtension).Length : 0;
         }
 
         /// <summary>
@@ -523,7 +539,7 @@ namespace LogBatcher
             bool mutexesAreOwned = false;
             try
             {
-                mutexesAreOwned = TryGetMutexes(GetAllPossibleFilePathsAsMutexNames());
+                mutexesAreOwned = TryGetMutexes(_allPossibleFilePathsAsMutexNames);
                 if (!mutexesAreOwned)
                 {
                     throw new FileAccessConflictException("It appears that another thread or process is accessing these files. Close it or change the file path.");
@@ -569,7 +585,7 @@ namespace LogBatcher
                             RollFiles();
                             _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
                         }
-                        File.AppendAllText(_baseLogFilePath, logEntry, Encoding.UTF8);
+                        File.AppendAllText(_baseLogFilePathWithExtension, logEntry, Encoding.UTF8);
                         _baseLogFileSize += logEntrySize;
                     }
                 }
@@ -607,7 +623,7 @@ namespace LogBatcher
             // TotalLogFiles value of 0 treated as a 1.
             if (TotalLogFiles < 2)
             {
-                File.WriteAllText(_baseLogFilePath, string.Empty);
+                File.WriteAllText(_baseLogFilePathWithExtension, string.Empty);
                 return;
             }
 
@@ -619,8 +635,8 @@ namespace LogBatcher
         }
 
         /// <summary>
-        /// Tries to copy all existing log files to a series of temporary log
-        /// files. Throws an exception if unsuccessful for any reason.
+        /// Tries to copy all existing log files to a series of corresponding temporary log files.
+        /// Throws an exception if unsuccessful for any reason.
         /// </summary>
         /// <exception cref="IOException"></exception>
         /// <exception cref="UnauthorizedAccessException"></exception>
@@ -636,14 +652,10 @@ namespace LogBatcher
             //Copy log files to .tmp files for safe rollover
             try
             {
-                if (File.Exists(_baseLogFilePath))
+                for (int i = 0; i < TotalLogFiles; ++i)
                 {
-                    File.Copy(_baseLogFilePath, $"{_baseLogFilePath}.tmp", overwrite: true);
-                }
-                for (int i = 0; i < TotalLogFiles - 1; ++i)
-                {
-                    string originalFile = $"{_baseLogFilePath}.{i}";
-                    string tmpFile = $"{_baseLogFilePath}.{i}.tmp";
+                    string originalFile = _allPossiblePersistentLogFilePaths[i];
+                    string tmpFile = _allPossibleTemporaryLogFilePaths[i];
                     if (File.Exists(originalFile))
                     {
                         File.Copy(originalFile, tmpFile, overwrite: true);
@@ -681,16 +693,16 @@ namespace LogBatcher
                 {
                     return;
                 }
-                int highestLogFileIndex = TotalLogFiles - 2; //-1 for counting from 0, -1 for unnumbered base file.
-                string lastPossibleFilePath = $"{_baseLogFilePath}.{highestLogFileIndex}.tmp";
+                int highestLogFileIndex = TotalLogFiles - 1; //-1 for counting from 0
+                string lastPossibleFilePath = _allPossibleTemporaryLogFilePaths[highestLogFileIndex];
                 if (File.Exists(lastPossibleFilePath))
                 {
                     File.Delete(lastPossibleFilePath);
                 }
                 for (int logFileIndex = highestLogFileIndex - 1; logFileIndex >= 0; --logFileIndex)
                 {
-                    string targetFile = $"{_baseLogFilePath}.{logFileIndex}.tmp";
-                    string rollToFile = $"{_baseLogFilePath}.{logFileIndex + 1}.tmp";
+                    string targetFile = _allPossibleTemporaryLogFilePaths[logFileIndex];
+                    string rollToFile = _allPossibleTemporaryLogFilePaths[logFileIndex + 1];
 
                     if (File.Exists(targetFile))
                     {
@@ -701,12 +713,8 @@ namespace LogBatcher
                         File.Move(targetFile, rollToFile);
                     }
                 }
-                if (File.Exists($"{_baseLogFilePath}.tmp"))
-                {
-                    File.Move($"{_baseLogFilePath}.tmp", $"{_baseLogFilePath}.0.tmp");
-                }
 
-                File.WriteAllText($"{_baseLogFilePath}.tmp", string.Empty, new UTF8Encoding(true));
+                File.WriteAllText(_allPossibleTemporaryLogFilePaths[0], string.Empty, new UTF8Encoding(true));
             }
             catch
             {
@@ -728,13 +736,8 @@ namespace LogBatcher
         /// <exception cref="System.Security.SecurityException"></exception>
         private void DeleteTmpLogFiles()
         {
-            if (File.Exists($"{_baseLogFilePath}.tmp"))
+            foreach (string tmpFile in _allPossibleTemporaryLogFilePaths)
             {
-                File.Delete($"{ _baseLogFilePath}.tmp");
-            }
-            for (int i = 0; i < TotalLogFiles - 1; ++i)
-            {
-                string tmpFile = $"{_baseLogFilePath}.{i}.tmp";
                 if (File.Exists(tmpFile))
                 {
                     File.Delete(tmpFile);
@@ -755,16 +758,11 @@ namespace LogBatcher
         /// <exception cref="System.Security.SecurityException"></exception>
         private void DeletePersistentLogFiles()
         {
-            if (File.Exists($"{_baseLogFilePath}"))
+            foreach (string logFile in _allPossiblePersistentLogFilePaths)
             {
-                File.Delete($"{_baseLogFilePath}");
-            }
-            for (int i = 0; i < TotalLogFiles - 1; ++i)
-            {
-                string persistentFile = $"{_baseLogFilePath}.{i}";
-                if (File.Exists(persistentFile))
+                if (File.Exists(logFile))
                 {
-                    File.Delete(persistentFile);
+                    File.Delete(logFile);
                 }
             }
         }
@@ -785,14 +783,10 @@ namespace LogBatcher
         private void MoveTmpLogFilesToPersistentLogFiles()
         {
             //Try to move tmp log files to persistent log files
-            if (File.Exists($"{_baseLogFilePath}.tmp"))
+            for (int i = 0; i < TotalLogFiles; ++i)
             {
-                File.Move($"{_baseLogFilePath}.tmp", _baseLogFilePath);
-            }
-            for (int i = 0; i < TotalLogFiles - 1; ++i)
-            {
-                string tmpFile = $"{_baseLogFilePath}.{i}.tmp";
-                string persistentFile = $"{_baseLogFilePath}.{i}";
+                string tmpFile = _allPossibleTemporaryLogFilePaths[i];
+                string persistentFile = _allPossiblePersistentLogFilePaths[i];
                 if (File.Exists(tmpFile))
                 {
                     File.Move(tmpFile, persistentFile);
@@ -866,48 +860,90 @@ namespace LogBatcher
             }
         }
 
-        /// <summary>
-        /// Returns a collection containing a unique valid mutex name for every file path
-        /// potentially subject to read/write operations by this Logger instance.
-        /// </summary>
-        private IEnumerable<string> GetAllPossibleFilePathsAsMutexNames()
+        // /// <summary>
+        // /// Returns a collection containing a unique valid mutex name for every file path
+        // /// potentially subject to read/write operations by this Logger instance.
+        // /// </summary>
+        private string[] GenerateAllPossibleFilePathsAsMutexNames()
         {
             string[] mutexNames = new string[TotalLogFiles * 2];
             int IndexOf(int logFileNumber) { return 2 * logFileNumber; }
-            string baseName = mutexNames[0] = ConvertFilePathToMutexName(_baseLogFilePath);
-            mutexNames[1] = $"{baseName}.tmp";
-            for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
+            for (int logFileNum = 0; logFileNum < TotalLogFiles; ++logFileNum)
             {
-                mutexNames[IndexOf(logFileNum)] = $"{baseName}.{logFileNum}";
-                mutexNames[IndexOf(logFileNum) + 1] = $"{baseName}.{logFileNum}.tmp";
+                mutexNames[IndexOf(logFileNum)] = ConvertFilePathToMutexName(_allPossiblePersistentLogFilePaths[logFileNum]);
+                mutexNames[IndexOf(logFileNum) + 1] = ConvertFilePathToMutexName(_allPossibleTemporaryLogFilePaths[logFileNum]);
             }
             return mutexNames;
+        }
+
+        /// <summary>
+        /// Returns an array containing a unique valid mutex name for every file path potentially
+        /// subject to read/write operations by this Logger instance.
+        /// </summary>
+        // private string[] GenerateAllPossibleFilePathsAsMutexNames()
+        // {
+        //     string[] mutexNames = new string[TotalLogFiles * 2];
+        //     using(IEnumerator<string> allPersistentPathsEnumerator = (IEnumerator<string>)_allPossiblePersistentLogFilePaths.GetEnumerator())
+        //     using(IEnumerator<string> allTmpPathsEnumerator = (IEnumerator<string>)_allPossibleTemporaryLogFilePaths.GetEnumerator())
+        //     {
+        //         int i = 0;
+        //         while (i < mutexNames.Length)
+        //         {
+        //             allPersistentPathsEnumerator.MoveNext();
+        //             mutexNames[i++] = ConvertFilePathToMutexName(allPersistentPathsEnumerator.Current);
+        //             allTmpPathsEnumerator.MoveNext();
+        //             mutexNames[i++] = ConvertFilePathToMutexName(allTmpPathsEnumerator.Current);
+        //         }
+        //         return mutexNames;
+        //     }
+        // }
+
+        /// <summary>
+        /// Returns a valid log file path. If 'logFileNum' is set, it will generate a log file name
+        /// incorporating the number. If 'logFileType' is set to TEMPORARY, it will generate a log
+        /// file name ending with the extension .tmp. By default, it will return the base log file
+        /// path.
+        /// </summary>
+        private string GenerateLogFilePathWithExtension(LogFileType logFileType, int? logFileNum = null)
+        {
+            string extension = logFileType == LogFileType.TEMPORARY ? LoggerTmpFileNameExtension : LoggerFileNameExtension;
+            string logFileNumStr = logFileNum?.ToString();
+            int sizeOfPath = Utils.GetSizeInBytes(_baseLogFilePathNoExtension) + Utils.GetSizeInBytes(logFileNumStr) + Utils.GetSizeInBytes(extension);
+            StringBuilder logFilePathBuilder = new StringBuilder(sizeOfPath);
+            logFilePathBuilder.Append(_baseLogFilePathNoExtension);
+            logFilePathBuilder.Append(logFileNumStr);
+            logFilePathBuilder.Append(extension);
+            return logFilePathBuilder.ToString();
         }
 
         /// <summary>
         /// Returns a collection containing every possible persistent log file path potentially
         /// subject to read/write operations by this Logger instance, starting with the base path.
         /// </summary>
-        private IEnumerable<string> GetAllPossiblePersistentLogFilePaths()
+        private string[] GenerateAllPossiblePersistentLogFilePaths()
         {
-            yield return _baseLogFilePath;
+            List<string> filePaths = new List<string>();
+            filePaths.Add(GenerateLogFilePathWithExtension(LogFileType.PERSISTENT));
             for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
             {
-                yield return $"{_baseLogFilePath}.{logFileNum}";
+                filePaths.Add(GenerateLogFilePathWithExtension(LogFileType.PERSISTENT, logFileNum));
             }
+            return filePaths.ToArray();
         }
 
         /// <summary>
         /// Returns a collection containing every possible temporary log file path potentially
         /// subject to read/write operations by this Logger instance, starting with the base path.
         /// </summary>
-        private IEnumerable<string> GetAllPossibleTmpLogFilePaths()
+        private string[] GenerateAllPossibleTmpLogFilePaths()
         {
-            yield return $"{_baseLogFilePath}.tmp";
+            List<string> filePaths = new List<string>();
+            filePaths.Add(GenerateLogFilePathWithExtension(LogFileType.TEMPORARY));
             for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
             {
-                yield return $"{_baseLogFilePath}.{logFileNum}.tmp";
+                filePaths.Add(GenerateLogFilePathWithExtension(LogFileType.TEMPORARY, logFileNum));
             }
+            return filePaths.ToArray();
         }
 
         /// <summary>
@@ -916,7 +952,7 @@ namespace LogBatcher
         /// </summary>
         private IEnumerable<string> GetAllExistingPersistentLogFilePaths()
         {
-            foreach (string filePath in AllPossiblePersistentLogFilePaths)
+            foreach (string filePath in _allPossiblePersistentLogFilePaths)
             {
                 if (File.Exists(filePath))
                 {
@@ -952,7 +988,6 @@ namespace LogBatcher
         /// Returns a collection containing every currently existing serialized JSON log
         /// deserialized and converted into type 'T', starting with the most recent.
         /// </summary>
-        /// TODO: throws exceptions if it can't be deserialized to type T, etc.
         /// <remarks>
         /// While iterating this collection, Logger will stop writing new logs.
         /// </remarks>

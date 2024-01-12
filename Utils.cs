@@ -10,5 +10,10 @@ namespace LogBatcher
             else if (val.CompareTo(max) > 0) return max;
             else return val;
         }
+
+        public static int GetSizeInBytes(string str)
+        {
+            return (str?.Length ?? 0) * sizeof(char);
+        }
     }
 }

@@ -50,10 +50,12 @@ una fallarán e imprimirán un mensaje de error a consola.
 - Se homogeniza el criterio de los mensajes de LogBatcher enviados a consola. El prefijo
 [LogBatcher] indica su procedencia.
 
-Versión 0.8
+- Se ofrece la posibilidad de serializar los objetos a JSON strings y loguearlos, con o supresión de propiedades cuyos valores son los originales de su tipo y/o null.
 
-- Se ofrece la posibilidad de serializar los objetos a JSON y guardarlos en archivo, con o supresión de propiedades cuyos valores son los originales de su tipo y/o null.
+- Se ofrece la posibilidad de deserializar los JSON strings de los archivos y reconvertirlos en los objetos originales.
 
 - Cualquier excepción al instanciarse la clase Logger se gestiona imprimiendo un mensaje de error a consola.
 
 - Se incorpora un packages.config para gestionar dependencias y se especifica .NETFramework 4.7 como target.
+
+- Todos los archivos log ahora llevan la extensión '.log'.
