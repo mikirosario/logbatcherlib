@@ -61,22 +61,22 @@ namespace LogBatcher
         private volatile bool _stop = false;
         private readonly Thread _loggingThread;
 
+        private IEnumerable<string> AllPossiblePersistentLogFilePaths { get => GetAllPossiblePersistentLogFilePaths(); }
+        private IEnumerable<string> AllPossibleTmpLogFilePaths { get => GetAllPossibleTmpLogFilePaths(); }
+        private IEnumerable<string> AllExistingPersistentLogFilePaths { get => GetAllExistingPersistentLogFilePaths(); }
+        public IEnumerable<string> AllLogs { get => ReadAllLogs(); }
         public LoggerState State { get => GetLoggerState(); }
-
         public string LoggerName { get => _loggerName; }
-
         public long MaxFileSizeInBytes
         {
             get => _maxFileSizeInBytes;
             private set => _maxFileSizeInBytes = Utils.Clamp(value, 0, FileSizeUpperLimit);
         }
-
         public byte TotalLogFiles
         {
             get => _totalLogFiles;
             private set => _totalLogFiles = Math.Max(TotalLogFilesLowerLimit, value);
         }
-
         public ushort LogDumpFrequency
         {
             get => _logDumpFrequency;
@@ -867,8 +867,8 @@ namespace LogBatcher
         }
 
         /// <summary>
-        /// Returns an array containing a unique valid mutex name for every file path subject to
-        /// read/write operations by this Logger instance.
+        /// Returns a collection containing a unique valid mutex name for every file path
+        /// potentially subject to read/write operations by this Logger instance.
         /// </summary>
         private IEnumerable<string> GetAllPossibleFilePathsAsMutexNames()
         {
@@ -884,11 +884,11 @@ namespace LogBatcher
             return mutexNames;
         }
 
-        public IEnumerable<string> AllPossibleLogFilePaths { get => GetAllPossibleLogFilePaths(); }
-        public IEnumerable<string> AllExistingLogFiles { get => GetAllExistingLogFiles(); }
-        public IEnumerable<string> AllLogs { get => GetAllLogs(); }
-
-        private IEnumerable<string> GetAllPossibleLogFilePaths()
+        /// <summary>
+        /// Returns a collection containing every possible persistent log file path potentially
+        /// subject to read/write operations by this Logger instance, starting with the base path.
+        /// </summary>
+        private IEnumerable<string> GetAllPossiblePersistentLogFilePaths()
         {
             yield return _baseLogFilePath;
             for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
@@ -897,9 +897,26 @@ namespace LogBatcher
             }
         }
 
-        private IEnumerable<string> GetAllExistingLogFiles()
+        /// <summary>
+        /// Returns a collection containing every possible temporary log file path potentially
+        /// subject to read/write operations by this Logger instance, starting with the base path.
+        /// </summary>
+        private IEnumerable<string> GetAllPossibleTmpLogFilePaths()
         {
-            foreach (string filePath in AllPossibleLogFilePaths)
+            yield return $"{_baseLogFilePath}.tmp";
+            for (int logFileNum = 1; logFileNum < TotalLogFiles; ++logFileNum)
+            {
+                yield return $"{_baseLogFilePath}.{logFileNum}.tmp";
+            }
+        }
+
+        /// <summary>
+        /// Returns a collection containing a path to every currently existing persistent log file,
+        /// starting with the most recent.
+        /// </summary>
+        private IEnumerable<string> GetAllExistingPersistentLogFilePaths()
+        {
+            foreach (string filePath in AllPossiblePersistentLogFilePaths)
             {
                 if (File.Exists(filePath))
                 {
@@ -908,11 +925,18 @@ namespace LogBatcher
             }
         }
 
-        public IEnumerable<string> GetAllLogs()
+        /// <summary>
+        /// Returns a collection containing every currently existing log, starting with the most
+        /// recent.
+        /// </summary>
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs.
+        /// </remarks>
+        public IEnumerable<string> ReadAllLogs()
         {
             lock (_internalFileLock)
             {
-                foreach (string filePath in AllExistingLogFiles)
+                foreach (string filePath in AllExistingPersistentLogFilePaths)
                 {
                     foreach (string line in File.ReadLines(filePath))
                     {
@@ -922,6 +946,26 @@ namespace LogBatcher
             }
         }
 
+        //TODO: Retrieve and delete from file, with update of baselogFileSize as needed. Potentially will have to Interlock _baselogFileSize as it can't be declared volatile.
+        //TODO: Also, it would be more ideal to separate this into a ReadJsonLogs and a generic static DeserializeJsonLog, but I'd need a reliable way to verify the JSONness of each log without calling Deserialize
+        /// <summary>
+        /// Returns a collection containing every currently existing serialized JSON log
+        /// deserialized and converted into type 'T', starting with the most recent.
+        /// </summary>
+        /// TODO: throws exceptions if it can't be deserialized to type T, etc.
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs.
+        /// </remarks>
+        public IEnumerable<T> ReadAllDeserializedJsonLogs<T>()
+        {
+            foreach (string log in AllLogs)
+            {
+                if (TryDeserializeJson(log, out T deserializedJson))
+                {
+                    yield return deserializedJson;
+                }
+            }
+        }
 
         private bool TryDeserializeJson<T>(string jsonString, out T deserializedJson)
         {
@@ -934,17 +978,6 @@ namespace LogBatcher
             {
                 deserializedJson = default;
                 return false;
-            }
-        }
-
-        public IEnumerable<T> GetAllDeserializedJsonLogs<T>()
-        {
-            foreach (string log in AllLogs)
-            {
-                if (TryDeserializeJson(log, out T deserializedJson))
-                {
-                    yield return deserializedJson;
-                }
             }
         }
     }
