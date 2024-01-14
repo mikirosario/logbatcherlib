@@ -54,6 +54,8 @@ una fallarán e imprimirán un mensaje de error a consola.
 
 - Se ofrece la posibilidad de deserializar los JSON strings de los archivos y reconvertirlos en los objetos originales.
 
+- Se ofrece la posibilidad de borrar todos los logs, o solo los JSON strings, según son leídos.
+
 - Cualquier excepción al instanciarse la clase Logger se gestiona imprimiendo un mensaje de error a consola.
 
 - Se incorpora un packages.config para gestionar dependencias y se especifica .NETFramework 4.7 como target.
