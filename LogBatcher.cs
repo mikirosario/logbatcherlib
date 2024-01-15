@@ -933,9 +933,14 @@ namespace LogBatcher
             {
                 foreach (string mutexName in mutexNames)
                 {
-                    _mutexList.AddLast(new Mutex(false, mutexName));
+                    Mutex mutex = new Mutex(false, mutexName);
+                    gotMutexes = mutex.WaitOne(0);
+                    if (!gotMutexes)
+                    {
+                        break;
+                    }
+                    _mutexList.AddLast(mutex);
                 }
-                gotMutexes = Mutex.WaitAll(_mutexList.ToArray(), 0);
             }
             finally
             {
