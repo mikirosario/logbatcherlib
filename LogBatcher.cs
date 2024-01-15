@@ -95,7 +95,7 @@ namespace LogBatcher
             private set => _logDumpFrequency = Math.Max(LogDumpFrequencyLowerLimit, value);
         }
 
-        public Logger(string loggerName, string logFilePath, long maxLogFileSizeInBytes, byte totalLogFiles, ushort logDumpFrequency)
+        public Logger(string loggerName, string logFilePath, ushort logDumpFrequency, long maxLogFileSizeInBytes = FileSizeUpperLimit, byte totalLogFiles = byte.MaxValue)
         {
             try
             {
