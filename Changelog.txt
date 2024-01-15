@@ -2,62 +2,50 @@
 
 Versión 0.1 - 0.5:
 
-- Al cerrar la aplicación con logs cacheados en RAM, estos no se registraban en
-los archivos. Ahora se registran correctamente.
+- Cached logs are now correctly saved to disk when a Logger instance closes.
 
-- Anteriormente, la carpeta de logs se generaba en el directorio de trabajo
-actual desde el se ejecutaba la aplicación. Ahora la carpeta se genera en el
-directorio donde reside el ejecutable.
+- Relative log folder paths are now generated in the executable's directory rather than the
+directory from which the executable was launched.
 
-- Ahora se puede configurar el Logger mediante el archivo config.json.
-
-- Tamaño máximo de un archivo de log subido a 500MB.
-
-- Tamaño por defecto de un archivo de log subido a 100MB.
-
-- Número de archivos de log rotatorios generados por defecto subido a 100.
+- Maximum size of a log file raised to 500 MB.
 
 Versión 0.6
 
-- Ahora se admiten las rutas absolutas como valores de "LogFilePath" en el
-config.json.
+- Absolute log folder paths may now be specified.
 
-- Ahora los errores se muestran en rojo y las advertencias en amarillo.
+- Error messages are now shown in red while warnings are shown in yellow.
 
-- Tamaño máximo de "LogFilePath" subdo a 200 caracteres.
+- LogFilePath maximum length raised to 200 characters.
 
-- Changelog añadido.
+- Added this Changelog.
 
 Versión 0.7
 
-- El método Log ya no loguea a consola, solo a archivo.
+- The 'Log' method no longer logs to console, only to file.
 
-- Se añade el método LogConsole, que solo loguea a consola.
+- New 'LogConsole' method added that only logs to console.
 
-- Se suprime el timestamp automático en logueo de mensajes.
+- The 'Log' method no longer prepends a timestamp to logs.
 
-- Se expone un nuevo método AffixTimestamp que le da al usuario la opción de poner un timestamp
-delante del mensaje.
+- The new method 'AffixTimestamp' offers the possibility of prepending a timestamp to a log.
 
-- Se usan mutex para restringir el acceso a los archivos. Ahora si dos o más instancias de Logger
-intentan acceder a los mismos archivos a la vez, aunque sea desde distintos procesos, todas menos
-una fallarán e imprimirán un mensaje de error a consola.
+- Mutexes are used to lock file access to a single Logger instance at a time. If two or more Logger
+instances try to access the same files at the same time, even from different processes, all but one
+will fail and print an error message to console.
 
-- La clase Logger ahora implementa IDisposable y puede usarse en un bloque using().
+- Logger now implements IDisposable and can be called with a using() block.
 
-- Se liberan los recursos de los AutoResetEvents explícitamente.
+- AutoResetEvents resources are now explicitly freed.
 
-- Se homogeniza el criterio de los mensajes de LogBatcher enviados a consola. El prefijo
-[LogBatcher] indica su procedencia.
+- Logger console messages now homogenized and prepended with [LogBatcher] to indicate their origin.
 
-- Se ofrece la posibilidad de serializar los objetos a JSON strings y loguearlos, con o supresión de propiedades cuyos valores son los originales de su tipo y/o null.
+- Objects can now be serialized to and logged as JSON strings, with optional default or null value suppression.
 
-- Se ofrece la posibilidad de deserializar los JSON strings de los archivos y reconvertirlos en los objetos originales.
+- Logs in proper JSON string format can now be deserialized to a compatible wrapper class.
 
-- Se ofrece la posibilidad de borrar todos los logs, o solo los JSON strings, según son leídos.
+- All logs, or only JSON logs, can now be deleted from disk after being read from file.
 
-- Cualquier excepción al instanciarse la clase Logger se gestiona imprimiendo un mensaje de error a consola.
+- All Logger exceptions are now handled with an error message written to the console.
 
-- Se incorpora un packages.config para gestionar dependencias y se especifica .NETFramework 4.7 como target.
-
-- Todos los archivos log ahora llevan la extensión '.log'.
+- All log files now have the extension .log and are numbered starting from 1 in the format: logs.log,
+logs1.log, logs2.log, etc.
