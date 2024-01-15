@@ -751,6 +751,8 @@ namespace LogBatcher
                 if (file[i] && (rollbackPos = GetNextRollbackPos(rollbackPos, i)) > -1)
                 {
                     File.Move(_allPossiblePersistentLogFilePaths[i], _allPossiblePersistentLogFilePaths[rollbackPos]);
+                    file[i] = false;
+                    file[rollbackPos] = true;
                 }
             }
         }
