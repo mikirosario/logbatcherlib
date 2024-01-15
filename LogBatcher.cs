@@ -38,7 +38,7 @@ namespace LogBatcher
             TEMPORARY
         }
         private const string ConsoleMessagePrefix = "[LogBatcher] ";
-        private const string LoggerNameDefault = "LoggerGW";
+        private const string LoggerNameDefault = "LogBatcher";
         private const string LoggerFileNameDefault = "log";
         private const string LoggerFileNameExtension = ".log";
         private const string LoggerTmpFileNameExtension = LoggerFileNameExtension + ".tmp";
