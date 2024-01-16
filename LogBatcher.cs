@@ -419,6 +419,10 @@ namespace LogBatcher
 
         private string ValidateLoggerName(string loggerName)
         {
+            if (string.IsNullOrWhiteSpace(loggerName))
+            {
+                return LoggerNameDefault;
+            }
             string returnValue;
             if (loggerName.Length > LoggerNameMaxLength)
             {

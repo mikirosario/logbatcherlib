@@ -49,3 +49,8 @@ will fail and print an error message to console.
 
 - All log files now have the extension .log and are numbered starting from 1 in the format: logs.log,
 logs1.log, logs2.log, etc.
+
+Versión 0.701
+
+- If Logger is instantiated with a null value for 'loggerName', it will use the default name rather
+than printing an error.
