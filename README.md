@@ -20,7 +20,7 @@ Elevate your .NET Framework 4.7+ applications with `logbatcherlib`, a comprehens
 
 8. **Automatic Log Rollback**: Maintain a consistent and uninterrupted sequence of log files with the rollback functionality, even after deletions, ensuring your logs are always organized and traceable.
 
-9. **Convenience Methods**: Utility methods like `AffixTimestamp` and `SanitizeLogString` enhance logging convenience, adding timestamps and ensuring clean log strings.
+9. **Convenience Methods**: Utility methods like `AffixTimestamp`, `CountLogs` and `CountJsonLogs` enhance logging convenience, adding timestamps and providing log inventory.
 
 10. **Exception Resilience**: Designed to gracefully handle various file-related exceptions, `logbatcherlib` provides a stable and reliable logging experience, even in the face of unexpected file system errors.
 

@@ -77,6 +77,7 @@ namespace LogBatcher
         private static Encoding Encoder { get; } = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
         private IEnumerable<LogFilePath> AllExistingPersistentLogFilePaths { get => GetAllExistingPersistentLogFilePaths(); }
         public IEnumerable<string> AllLogs { get => ReadAllLogs(); }
+        public IEnumerable<string> AllJsonLogs { get => ReadAllJsonLogs(); }
         public LoggerState State { get => GetLoggerState(); }
         public string LoggerName { get => _loggerName; }
         public long MaxFileSizeInBytes
@@ -325,7 +326,69 @@ namespace LogBatcher
             }
         }
 
-        //TODO: It would be more ideal to separate this into a ReadJsonLogs and a generic static DeserializeJsonLog, but I'd need a reliable way to verify the JSONness of each log without calling Deserialize
+        public IEnumerable<string> ReadAllJsonLogs()
+        {
+            lock (_internalFileLock)
+            {
+                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
+                {
+                    foreach (string line in File.ReadLines(filePath))
+                    {
+                        if (IsValidJsonString(line))
+                        {
+                            yield return line;
+                        }
+                    }
+                }
+            }
+        }
+
+        public IEnumerable<string> ReadAndDeleteAllJsonLogs()
+        {
+            lock (_internalFileLock)
+            {
+                List<LogFileDeleteInfo> logsNotToDelete = new List<LogFileDeleteInfo>(TotalLogFiles);
+                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
+                {
+                    LogFileDeleteInfo logFileDeleteInfo = new LogFileDeleteInfo(filePath.Index);
+                    ulong logLineNumberInFile = 0;
+                    foreach (string line in File.ReadLines(filePath))
+                    {
+                        if (IsValidJsonString(line))
+                        {
+                            yield return line;
+                        }
+                        else
+                        {
+                            logFileDeleteInfo.LogsToKeep.AddLast(logLineNumberInFile);
+                        }
+                        ++logLineNumberInFile;
+                    }
+                    logFileDeleteInfo.TotalLogsInFile = logLineNumberInFile;
+                    logsNotToDelete.Add(logFileDeleteInfo);
+                }
+                DeleteLogsFromFiles(logsNotToDelete);
+                _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
+            }
+        }
+
+        public IEnumerable<T> ReadAndDeserializeAllJsonLogs<T>()
+        {
+            lock (_internalFileLock)
+            {
+                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
+                {
+                    foreach (string line in File.ReadLines(filePath))
+                    {
+                        if (TryDeserializeJson(line, out T deserializedJson))
+                        {                    
+                            yield return deserializedJson;
+                        }
+                    }
+                }
+            }
+        }
+
         /// <summary>
         /// Returns a collection containing every JSON log saved to disc deserialized and converted
         /// into type 'T', starting with the most recent, and deletes them from the disc.
@@ -333,7 +396,7 @@ namespace LogBatcher
         /// <remarks>
         /// While iterating this collection, Logger will stop writing new logs.
         /// </remarks>
-        public IEnumerable<T> ReadAndDeleteAllDeserializedJsonLogs<T>()
+        public IEnumerable<T> ReadDeserializeAndDeleteAllJsonLogs<T>()
         {
             lock (_internalFileLock)
             {
@@ -362,21 +425,24 @@ namespace LogBatcher
             }
         }
 
-        public IEnumerable<T> ReadAllDeserializedJsonLogs<T>()
+        public uint CountLogs()
         {
-            lock (_internalFileLock)
+            uint count = 0;
+            foreach (string log in AllLogs)
             {
-                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
-                {
-                    foreach (string line in File.ReadLines(filePath))
-                    {
-                        if (TryDeserializeJson(line, out T deserializedJson))
-                        {                    
-                            yield return deserializedJson;
-                        }
-                    }
-                }
+                ++count;
             }
+            return count;
+        }
+
+        public uint CountJsonLogs()
+        {
+            uint count = 0;
+            foreach (string jsonLog in AllJsonLogs)
+            {
+                ++count;
+            }
+            return count;
         }
 
         /// <summary>
@@ -389,6 +455,35 @@ namespace LogBatcher
         public static string SerializeToJson(object obj, JsonSerializerOptions options = null)
         {
             return JsonSerializer.Serialize(obj, options);
+        }
+
+        private static bool IsValidJsonString(string str)
+        {
+            try
+            {
+                using (JsonDocument parsedJson = JsonDocument.Parse(str))
+                {
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        private static bool TryDeserializeJson<T>(string jsonString, out T deserializedJson)
+        {
+            try
+            {
+                deserializedJson = JsonSerializer.Deserialize<T>(jsonString);
+                return true;
+            }
+            catch (JsonException)
+            {
+                deserializedJson = default;
+                return false;
+            }
         }
 
         private static string SanitizeLogString(string logString)
@@ -417,7 +512,7 @@ namespace LogBatcher
             Console.ResetColor();
         }
 
-        private string ValidateLoggerName(string loggerName)
+        private static string ValidateLoggerName(string loggerName)
         {
             if (string.IsNullOrWhiteSpace(loggerName))
             {
@@ -1148,22 +1243,6 @@ namespace LogBatcher
             if (didDeleteFile)
             {
                 RollbackFiles();
-            }
-        }
-
-        
-
-        private bool TryDeserializeJson<T>(string jsonString, out T deserializedJson)
-        {
-            try
-            {
-                deserializedJson = JsonSerializer.Deserialize<T>(jsonString);
-                return true;
-            }
-            catch (JsonException)
-            {
-                deserializedJson = default;
-                return false;
             }
         }
     }

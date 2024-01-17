@@ -54,3 +54,15 @@ Versión 0.701
 
 - If Logger is instantiated with a null value for 'loggerName', it will use the default name rather
 than printing an error.
+
+Versión 0.8
+
+- Renamed ReadAllDeserializedJsonLogs and ReadAndDeleteAllDeserializedJsonLogs methods to ReadAndDeserializeAllJsonLogs and ReadDeserializeAndDeleteAllJsonLogs.
+
+- New ReadAllJsonLogs and ReadAndDeleteAllJsonLogs methods will operate on logs without deserializing them.
+
+- Handy new enumerable property AllJsonLogs for read-only operations.
+
+- New CountLogs and CountJsonLogs will count all logs in the Logger-associated files. This ain't
+cheap, so it should be done once, and the user should keep track of log additions and deletions
+from there.
