@@ -1,6 +1,6 @@
 ﻿Changelog
 
-Versión 0.1 - 0.5:
+Version 0.1 - 0.5:
 
 - Cached logs are now correctly saved to disk when a Logger instance closes.
 
@@ -9,7 +9,7 @@ directory from which the executable was launched.
 
 - Maximum size of a log file raised to 500 MB.
 
-Versión 0.6
+Version 0.6
 
 - Absolute log folder paths may now be specified.
 
@@ -19,7 +19,7 @@ Versión 0.6
 
 - Added this Changelog.
 
-Versión 0.7
+Version 0.7
 
 - The 'Log' method no longer logs to console, only to file.
 
@@ -39,7 +39,8 @@ will fail and print an error message to console.
 
 - Logger console messages now homogenized and prepended with [LogBatcher] to indicate their origin.
 
-- Objects can now be serialized to and logged as JSON strings, with optional default or null value suppression.
+- Objects can now be serialized to and logged as JSON strings, with optional default or null value
+suppression.
 
 - Logs in proper JSON string format can now be deserialized to a compatible wrapper class.
 
@@ -47,22 +48,35 @@ will fail and print an error message to console.
 
 - All Logger exceptions are now handled with an error message written to the console.
 
-- All log files now have the extension .log and are numbered starting from 1 in the format: logs.log,
+- All log files now have the extension .log and are numbered starting at 1 in the format: logs.log,
 logs1.log, logs2.log, etc.
 
-Versión 0.701
+Version 0.701
 
 - If Logger is instantiated with a null value for 'loggerName', it will use the default name rather
 than printing an error.
 
-Versión 0.8
+Version 0.8
 
-- Renamed ReadAllDeserializedJsonLogs and ReadAndDeleteAllDeserializedJsonLogs methods to ReadAndDeserializeAllJsonLogs and ReadDeserializeAndDeleteAllJsonLogs.
+- Renamed ReadAllDeserializedJsonLogs and ReadAndDeleteAllDeserializedJsonLogs methods to
+ReadAndDeserializeAllJsonLogs and ReadDeserializeAndDeleteAllJsonLogs.
 
-- New ReadAllJsonLogs and ReadAndDeleteAllJsonLogs methods will operate on logs without deserializing them.
+- New ReadAllJsonLogs and ReadAndDeleteAllJsonLogs methods will operate on logs without
+deserializing them.
 
 - Handy new enumerable property AllJsonLogs for read-only operations.
 
 - New CountLogs and CountJsonLogs will count all logs in the Logger-associated files. This ain't
 cheap, so it should be done once, and the user should keep track of log additions and deletions
 from there.
+
+Version 0.9
+
+- Major refactor of file reading operation to consolidate the code for code maintenance reasons.
+Some breaking changes introduced.
+
+- CountLogs and CountJsonLogs operations now use the file operation lock. They cannot be used
+while iterating over logs. Might implement separate writeLock later so this only applies to
+iterations with potential file write or delete operations.
+
+- User can now limit the maximum number of logs to be retrieved from files for batched retrieval.

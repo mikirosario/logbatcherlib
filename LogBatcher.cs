@@ -47,6 +47,7 @@ namespace LogBatcher
         private const byte TotalLogFilesLowerLimit = 1;
         private const long FileSizeUpperLimit = 524288000;
         private const ushort LogDumpFrequencyLowerLimit = 1;
+        delegate bool LineFilter<T>(string line, out T filteredLine);
         private readonly object _internalFileLock = new object();
         private readonly JsonSerializerOptions _jsonSerializerConfigIncludeAllPretty = new JsonSerializerOptions() { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never };
         private readonly JsonSerializerOptions _jsonSerializerConfigIgnoreDefaultValuesPretty = new JsonSerializerOptions() { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault };
@@ -150,17 +151,6 @@ namespace LogBatcher
         public static string AffixTimestamp(string message)
         {
             return $"{DateTime.Now:yyyyMMddHHmmss} | {SanitizeLogString(message)}";
-        }
-
-        public void Stop()
-        {
-            if (!_stop)
-            {
-                _stop = true;
-                _stopSignal.Set(); // Signal the logger thread to stop
-                _loggingThread?.Join(); // Wait for the logger thread to finish
-                PrintInfo($"{LoggerName} stopped");
-            }
         }
 
         /// <summary>
@@ -285,6 +275,7 @@ namespace LogBatcher
 
         /// <summary>
         /// Returns a collection containing every log saved to disc, starting with the most recent.
+        /// Aliased by 'AllLogs' property.
         /// </summary>
         /// <remarks>
         /// While iterating this collection, Logger will stop writing new logs.
@@ -304,28 +295,12 @@ namespace LogBatcher
         }
 
         /// <summary>
-        /// Returns a collection containing every log saved to disc, starting with the most recent,
-        /// and deletes them from the disc.
+        /// Returns a collection containing every JSON string saved to disc, starting with the most
+        /// recent. Aliased by 'AllJsonLogs' property.
         /// </summary>
         /// <remarks>
         /// While iterating this collection, Logger will stop writing new logs.
         /// </remarks>
-        public IEnumerable<string> ReadAndDeleteAllLogs()
-        {            
-            lock (_internalFileLock)
-            {
-                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
-                {
-                    foreach (string line in File.ReadLines(filePath))
-                    {
-                        yield return line;
-                    }
-                }
-                DeleteAllLogFiles();
-                _baseLogFileSize = 0;
-            }
-        }
-
         public IEnumerable<string> ReadAllJsonLogs()
         {
             lock (_internalFileLock)
@@ -334,55 +309,9 @@ namespace LogBatcher
                 {
                     foreach (string line in File.ReadLines(filePath))
                     {
-                        if (IsValidJsonString(line))
+                        if (IsValidJsonString(line, out _))
                         {
                             yield return line;
-                        }
-                    }
-                }
-            }
-        }
-
-        public IEnumerable<string> ReadAndDeleteAllJsonLogs()
-        {
-            lock (_internalFileLock)
-            {
-                List<LogFileDeleteInfo> logsNotToDelete = new List<LogFileDeleteInfo>(TotalLogFiles);
-                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
-                {
-                    LogFileDeleteInfo logFileDeleteInfo = new LogFileDeleteInfo(filePath.Index);
-                    ulong logLineNumberInFile = 0;
-                    foreach (string line in File.ReadLines(filePath))
-                    {
-                        if (IsValidJsonString(line))
-                        {
-                            yield return line;
-                        }
-                        else
-                        {
-                            logFileDeleteInfo.LogsToKeep.AddLast(logLineNumberInFile);
-                        }
-                        ++logLineNumberInFile;
-                    }
-                    logFileDeleteInfo.TotalLogsInFile = logLineNumberInFile;
-                    logsNotToDelete.Add(logFileDeleteInfo);
-                }
-                DeleteLogsFromFiles(logsNotToDelete);
-                _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
-            }
-        }
-
-        public IEnumerable<T> ReadAndDeserializeAllJsonLogs<T>()
-        {
-            lock (_internalFileLock)
-            {
-                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
-                {
-                    foreach (string line in File.ReadLines(filePath))
-                    {
-                        if (TryDeserializeJson(line, out T deserializedJson))
-                        {                    
-                            yield return deserializedJson;
                         }
                     }
                 }
@@ -390,59 +319,134 @@ namespace LogBatcher
         }
 
         /// <summary>
-        /// Returns a collection containing every JSON log saved to disc deserialized and converted
-        /// into type 'T', starting with the most recent, and deletes them from the disc.
+        /// Returns a collection containing up to 'maxLogsToRead' logs saved to disc, starting with
+        /// the most recent.
         /// </summary>
         /// <remarks>
-        /// While iterating this collection, Logger will stop writing new logs.
+        /// While iterating this collection, Logger will stop writing new logs. If no
+        /// 'maxLogsToRead' is specified, it defaults to the maximum value of a long.
         /// </remarks>
-        public IEnumerable<T> ReadDeserializeAndDeleteAllJsonLogs<T>()
+        public IEnumerable<string> ReadLogs(long maxLogsToRead = long.MaxValue)
+        {
+            foreach (string log in ReadLogsFileOp<string>(Filter: NoFilter, deleteReadLogs: true, maxLogsToRead))
+            {
+                yield return log;
+            }
+        }
+
+        /// <summary>
+        /// Returns a collection containing up to 'maxLogsToRead' logs saved to disc, starting with
+        /// the most recent, and deletes them from the disc.
+        /// </summary>
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs. If no
+        /// 'maxLogsToRead' is specified, it defaults to the maximum value of a long.
+        /// </remarks>
+        public IEnumerable<string> ReadAndDeleteLogs(long maxLogsToRead = long.MaxValue)
+        {
+            foreach (string log in ReadLogsFileOp<string>(Filter: NoFilter, deleteReadLogs: true, maxLogsToRead))
+            {
+                yield return log;
+            }
+        }
+
+        /// <summary>
+        /// Returns a collection containing up to 'maxLogsToRead' JSON strings saved to disc,
+        /// starting with the most recent.
+        /// </summary>
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs. If no
+        /// 'maxLogsToRead' is specified, it defaults to the maximum value of a long.
+        /// </remarks>
+        public IEnumerable<string> ReadJsonLogs(long maxLogsToRead = long.MaxValue)
+        {
+            foreach (string jsonLog in ReadLogsFileOp<string>(Filter: IsValidJsonString, deleteReadLogs: false, maxLogsToRead))
+            {
+                yield return jsonLog;
+            }
+        }
+
+        /// <summary>
+        /// Returns a collection containing up to 'maxLogsToRead' JSON strings saved to disc,
+        /// starting with the most recent, and deletes them from the disc.
+        /// </summary>
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs. If no
+        /// 'maxLogsToRead' is specified, it defaults to the maximum value of a long.
+        /// </remarks>
+        public IEnumerable<string> ReadAndDeleteJsonLogs(long maxLogsToRead = long.MaxValue)
+        {
+            foreach (string jsonLog in ReadLogsFileOp<string>(Filter: IsValidJsonString, deleteReadLogs: true, maxLogsToRead))
+            {
+                yield return jsonLog;
+            }
+        }
+
+        /// <summary>
+        /// Returns a collection containing up to 'maxLogsToRead' JSON strings saved to disc,
+        /// deserialized to type 'T', starting with the most recent.
+        /// </summary>
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs. If no
+        /// 'maxLogsToRead' is specified, it defaults to the maximum value of a long.
+        /// </remarks>
+        public IEnumerable<T> ReadAndDeserializeJsonLogs<T>(long maxLogsToRead = long.MaxValue)
+        {
+            foreach (T deserializedJsonLog in ReadLogsFileOp<T>(Filter: TryDeserializeJson<T>, deleteReadLogs: false, maxLogsToRead))
+            {
+                yield return deserializedJsonLog;
+            }
+        }
+
+        /// <summary>
+        /// Returns a collection containing up to 'maxLogsToRead' JSON strings saved to disc,
+        /// deserialized to type 'T', starting with the most recent, and deletes them from the
+        /// disc.
+        /// </summary>
+        /// <remarks>
+        /// While iterating this collection, Logger will stop writing new logs.  If no
+        /// 'maxLogsToRead' is specified, it defaults to the maximum value of a long.
+        /// </remarks>
+        public IEnumerable<T> ReadDeserializeAndDeleteAllJsonLogs<T>(long maxLogsToRead = long.MaxValue)
+        {
+            foreach (T deserializedJsonLog in ReadLogsFileOp<T>(Filter: TryDeserializeJson<T>, deleteReadLogs: true, maxLogsToRead))
+            {                    
+                yield return deserializedJsonLog;
+            }
+        }
+
+        /// <summary>
+        /// Returns the number of logs saved to file.
+        /// </summary>
+        /// <remarks>
+        /// Do NOT call this while iterating over a log collection, it will result in a deadlock.
+        /// Ideally, it should be called once when logger is instantiated and the user should then
+        /// keep track of any added and deleted logs.
+        /// </remarks>
+        public long CountLogs()
         {
             lock (_internalFileLock)
             {
-                List<LogFileDeleteInfo> logsNotToDelete = new List<LogFileDeleteInfo>(TotalLogFiles);
-                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
-                {
-                    LogFileDeleteInfo logFileDeleteInfo = new LogFileDeleteInfo(filePath.Index);
-                    ulong logLineNumberInFile = 0;
-                    foreach (string line in File.ReadLines(filePath))
-                    {
-                        if (TryDeserializeJson(line, out T deserializedJson))
-                        {
-                            yield return deserializedJson;
-                        }
-                        else
-                        {
-                            logFileDeleteInfo.LogsToKeep.AddLast(logLineNumberInFile);
-                        }
-                        ++logLineNumberInFile;
-                    }
-                    logFileDeleteInfo.TotalLogsInFile = logLineNumberInFile;
-                    logsNotToDelete.Add(logFileDeleteInfo);
-                }
-                DeleteLogsFromFiles(logsNotToDelete);
-                _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
+                IEnumerable<string> allLogsEnumerable = AllLogs;
+                return allLogsEnumerable.LongCount();
             }
         }
 
-        public uint CountLogs()
+        /// <summary>
+        /// Returns the number of JSON logs saved to file.
+        /// </summary>
+        /// <remarks>
+        /// Do NOT call this while iterating over a log collection, it will result in a deadlock.
+        /// Ideally, it should be called once when logger is instantiated and the user should then
+        /// keep track of any added and deleted JSON logs.
+        /// </remarks>
+        public long CountJsonLogs()
         {
-            uint count = 0;
-            foreach (string log in AllLogs)
+            lock (_internalFileLock)
             {
-                ++count;
+                IEnumerable<string> allJsonLogsEnumerable = AllJsonLogs;
+                return allJsonLogsEnumerable.LongCount();
             }
-            return count;
-        }
-
-        public uint CountJsonLogs()
-        {
-            uint count = 0;
-            foreach (string jsonLog in AllJsonLogs)
-            {
-                ++count;
-            }
-            return count;
         }
 
         /// <summary>
@@ -457,128 +461,54 @@ namespace LogBatcher
             return JsonSerializer.Serialize(obj, options);
         }
 
-        private static bool IsValidJsonString(string str)
+        /// <summary>
+        /// This unspeakable generic monster filters lines in the file referenced by 'filePath'
+        /// according to the criteria of 'Filter', converting each line into type T, up to
+        /// 'maxLogsToYield'. If the 'deleteReadLogs' flag is set to true, any yielded logs will be
+        /// deleted from their log files.     
+        /// </summary>
+        /// <remarks>
+        /// Some runtime efficiency (as little as possible) is sacrificed by this generic to
+        /// facilitate maintenance by avoiding code repetition. This file operation locks itself
+        /// with the _internalFileLock. The caller must not lock it.
+        /// </remarks>
+        private IEnumerable<T> ReadLogsFileOp<T>(LineFilter<T> Filter, bool deleteReadLogs = false, long maxLogsToYield = long.MaxValue)
         {
-            try
+            lock (_internalFileLock)
             {
-                using (JsonDocument parsedJson = JsonDocument.Parse(str))
+                List<LogFileDeleteInfo> logFileDeleteInfos = deleteReadLogs ? new List<LogFileDeleteInfo>(TotalLogFiles) : null;
+                long totalLogsYielded = 0;
+                foreach (LogFilePath filePath in AllExistingPersistentLogFilePaths)
                 {
-                    return true;
+                    if (totalLogsYielded >= maxLogsToYield)
+                    {
+                        break;
+                    }
+                    LinkedList<long> logsToDelete = deleteReadLogs ? new LinkedList<long>() : null;
+                    long logIndex = 0;
+                    bool hasLogToKeep = false;
+                    foreach (string log in File.ReadLines(filePath))
+                    {
+                        if (totalLogsYielded < maxLogsToYield && Filter(log, out T filteredLog)) //yield operation
+                        {
+                            ++totalLogsYielded;
+                            logsToDelete?.AddLast(logIndex); //Delete log at this index in this file
+                            yield return filteredLog;
+                        }
+                        else
+                        {
+                            hasLogToKeep = true;
+                        }
+                        ++logIndex;
+                    }
+                    logFileDeleteInfos?.Add(new LogFileDeleteInfo(filePath.Index, logsToDelete, hasLogToKeep));
+                }
+                if (deleteReadLogs)
+                {
+                    DeleteLogsFromFiles(logFileDeleteInfos);
+                    _baseLogFileSize = QueryFileSystemForBaseLogFileSize();
                 }
             }
-            catch (JsonException)
-            {
-                return false;
-            }
-        }
-
-        private static bool TryDeserializeJson<T>(string jsonString, out T deserializedJson)
-        {
-            try
-            {
-                deserializedJson = JsonSerializer.Deserialize<T>(jsonString);
-                return true;
-            }
-            catch (JsonException)
-            {
-                deserializedJson = default;
-                return false;
-            }
-        }
-
-        private static string SanitizeLogString(string logString)
-        {
-            return logString.Trim('\0');
-        }
-
-        private static void PrintError(string errorMsg)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.Error.WriteLine(GenerateConsoleMessage(errorMsg));
-            Console.ResetColor();
-        }
-
-        private static void PrintWarning(string warningMsg)
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.Error.WriteLine(GenerateConsoleMessage(warningMsg));
-            Console.ResetColor();
-        }
-
-        private static void PrintInfo(string infoMsg)
-        {
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine(GenerateConsoleMessage(infoMsg));
-            Console.ResetColor();
-        }
-
-        private static string ValidateLoggerName(string loggerName)
-        {
-            if (string.IsNullOrWhiteSpace(loggerName))
-            {
-                return LoggerNameDefault;
-            }
-            string returnValue;
-            if (loggerName.Length > LoggerNameMaxLength)
-            {
-                returnValue = loggerName.Substring(0, LoggerNameMaxLength);
-                PrintError($"Invalid Logger Name: {loggerName}.");
-                PrintWarning($"Logger Name too long (+{LoggerNameMaxLength} characters). Truncated to: {returnValue}.");
-            }
-            else
-            {
-                returnValue = loggerName;
-            }
-            if (string.IsNullOrWhiteSpace(returnValue) || loggerName.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
-            {
-                returnValue = LoggerNameDefault;
-                PrintError($"Invalid Logger Name: {loggerName}.");
-                PrintWarning($"Logger Name contains invalid characters. Using default Logger Name: {LoggerNameDefault}.");
-            }
-            return returnValue;
-        }
-
-        private static int CountDirectoriesInPath(string path)
-        {
-           if (string.IsNullOrWhiteSpace(path) || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
-           {
-                return -1;
-           }
-           int dirCount = 0;
-           foreach (char c in path)
-           {
-                if (c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar)
-                {
-                    ++dirCount;
-                }
-            }
-           return dirCount;
-        }
-
-        private static string CleanPath(string path)
-        {
-            char dirSep = Path.DirectorySeparatorChar;
-            char altDirSep = Path.AltDirectorySeparatorChar;
-            string pattern = $"[{Regex.Escape(dirSep.ToString())}{Regex.Escape(altDirSep.ToString())}]+";
-            string replacement = dirSep.ToString();
-            string cleanedPath = Regex.Replace(path, pattern, replacement);
-
-            return cleanedPath;
-        }
-
-        private static string ConvertFilePathToMutexName(string filePath)
-        {
-            StringBuilder mutexNameBuilder = new StringBuilder("logbatcherlib-");
-            string sanitizedPathName = filePath.Replace($@"{Path.DirectorySeparatorChar}", string.Empty).Replace($@"{Path.AltDirectorySeparatorChar}", string.Empty);
-
-            mutexNameBuilder.Append(sanitizedPathName);
-
-            return mutexNameBuilder.ToString();
-        }
-
-        private static string GenerateConsoleMessage(string message)
-        {
-            return ConsoleMessagePrefix + message;
         }
 
         private LoggerState GetLoggerState()
@@ -832,6 +762,60 @@ namespace LogBatcher
         }
 
         /// <summary>
+        /// Tries to move the temporary log files up one slot, such that
+        /// base_log_file.tmp becomes log_file.0.tmp, log_file.0.tmp becomes
+        /// log_file.1.tmp, etc., until the total number of temporary log files
+        /// equals TotalLogFiles. This method will do nothing if TotalLogFiles
+        /// is less than 2.
+        /// Throws an exception if unsuccessful for any reason.
+        /// </summary>
+        /// <exception cref="IOException"></exception>
+        /// <exception cref="UnauthorizedAccessException"></exception>
+        /// <exception cref="ArgumentException"></exception>
+        /// <exception cref="ArgumentNullException"></exception>
+        /// <exception cref="FileNotFoundException"></exception>
+        /// <exception cref="PathTooLongException"></exception>
+        /// <exception cref="DirectoryNotFoundException"></exception>
+        /// <exception cref="System.Security.SecurityException"></exception>
+        private void RolloverTmpLogFiles()
+        {
+            try
+            {
+                if (TotalLogFiles < 2)
+                {
+                    return;
+                }
+                int highestLogFileIndex = TotalLogFiles - 1; //-1 for counting from 0
+                string lastPossibleFilePath = _allPossibleTemporaryLogFilePaths[highestLogFileIndex];
+                if (File.Exists(lastPossibleFilePath))
+                {
+                    File.Delete(lastPossibleFilePath);
+                }
+                for (int logFileIndex = highestLogFileIndex - 1; logFileIndex >= 0; --logFileIndex)
+                {
+                    string targetFile = _allPossibleTemporaryLogFilePaths[logFileIndex];
+                    string rollToFile = _allPossibleTemporaryLogFilePaths[logFileIndex + 1];
+
+                    if (File.Exists(targetFile))
+                    {
+                        if (File.Exists(rollToFile))
+                        {
+                            File.Delete(rollToFile);
+                        }
+                        File.Move(targetFile, rollToFile);
+                    }
+                }
+
+                File.WriteAllText(_allPossibleTemporaryLogFilePaths[0], string.Empty, Encoder);
+            }
+            catch
+            {
+                DeleteTmpLogFiles();
+                throw;
+            }
+        }
+
+        /// <summary>
         /// Tries to perform a backwards log file rollover to fill in any gaps
         /// between log files caused by file deletions.
         /// </summary>
@@ -883,60 +867,6 @@ namespace LogBatcher
                         File.Copy(originalFile, tmpFile, overwrite: true);
                     }
                 }
-            }
-            catch
-            {
-                DeleteTmpLogFiles();
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Tries to move the temporary log files up one slot, such that
-        /// base_log_file.tmp becomes log_file.0.tmp, log_file.0.tmp becomes
-        /// log_file.1.tmp, etc., until the total number of temporary log files
-        /// equals TotalLogFiles. This method will do nothing if TotalLogFiles
-        /// is less than 2.
-        /// Throws an exception if unsuccessful for any reason.
-        /// </summary>
-        /// <exception cref="IOException"></exception>
-        /// <exception cref="UnauthorizedAccessException"></exception>
-        /// <exception cref="ArgumentException"></exception>
-        /// <exception cref="ArgumentNullException"></exception>
-        /// <exception cref="FileNotFoundException"></exception>
-        /// <exception cref="PathTooLongException"></exception>
-        /// <exception cref="DirectoryNotFoundException"></exception>
-        /// <exception cref="System.Security.SecurityException"></exception>
-        private void RolloverTmpLogFiles()
-        {
-            try
-            {
-                if (TotalLogFiles < 2)
-                {
-                    return;
-                }
-                int highestLogFileIndex = TotalLogFiles - 1; //-1 for counting from 0
-                string lastPossibleFilePath = _allPossibleTemporaryLogFilePaths[highestLogFileIndex];
-                if (File.Exists(lastPossibleFilePath))
-                {
-                    File.Delete(lastPossibleFilePath);
-                }
-                for (int logFileIndex = highestLogFileIndex - 1; logFileIndex >= 0; --logFileIndex)
-                {
-                    string targetFile = _allPossibleTemporaryLogFilePaths[logFileIndex];
-                    string rollToFile = _allPossibleTemporaryLogFilePaths[logFileIndex + 1];
-
-                    if (File.Exists(targetFile))
-                    {
-                        if (File.Exists(rollToFile))
-                        {
-                            File.Delete(rollToFile);
-                        }
-                        File.Move(targetFile, rollToFile);
-                    }
-                }
-
-                File.WriteAllText(_allPossibleTemporaryLogFilePaths[0], string.Empty, Encoder);
             }
             catch
             {
@@ -1104,28 +1034,6 @@ namespace LogBatcher
         }
 
         /// <summary>
-        /// Returns an array containing a unique valid mutex name for every file path potentially
-        /// subject to read/write operations by this Logger instance.
-        /// </summary>
-        // private string[] GenerateAllPossibleFilePathsAsMutexNames()
-        // {
-        //     string[] mutexNames = new string[TotalLogFiles * 2];
-        //     using(IEnumerator<string> allPersistentPathsEnumerator = (IEnumerator<string>)_allPossiblePersistentLogFilePaths.GetEnumerator())
-        //     using(IEnumerator<string> allTmpPathsEnumerator = (IEnumerator<string>)_allPossibleTemporaryLogFilePaths.GetEnumerator())
-        //     {
-        //         int i = 0;
-        //         while (i < mutexNames.Length)
-        //         {
-        //             allPersistentPathsEnumerator.MoveNext();
-        //             mutexNames[i++] = ConvertFilePathToMutexName(allPersistentPathsEnumerator.Current);
-        //             allTmpPathsEnumerator.MoveNext();
-        //             mutexNames[i++] = ConvertFilePathToMutexName(allTmpPathsEnumerator.Current);
-        //         }
-        //         return mutexNames;
-        //     }
-        // }
-
-        /// <summary>
         /// Returns a valid log file path. If 'logFileNum' is set, it will generate a log file name
         /// incorporating the number. If 'logFileType' is set to TEMPORARY, it will generate a log
         /// file name ending with the extension .tmp. By default, it will return the base log file
@@ -1177,7 +1085,7 @@ namespace LogBatcher
 
         /// <summary>
         /// Returns a collection containing a path to every currently existing persistent log file,
-        /// starting with the most recent.
+        /// starting with the most recent. Aliased by 'AllExistingPersistentLogFilePaths' property.
         /// </summary>
         private IEnumerable<LogFilePath> GetAllExistingPersistentLogFilePaths()
         {
@@ -1199,9 +1107,8 @@ namespace LogBatcher
         }
 
         /// <summary>
-        /// Selectively deletes logs from files by retaining only the logs flagged for retention in
-        /// logFileDeleteInfos and performs a rollback as needed to fill in gaps due to full log
-        /// file deletions.
+        /// Selectively deletes logs from files when flagged for deletion in a LogFileDeleteInfo
+        /// and performs a rollback as needed to fill in gaps due to complete log file deletions.
         /// </summary>
         private void DeleteLogsFromFiles(IEnumerable<LogFileDeleteInfo> logFileDeleteInfos)
         {
@@ -1223,15 +1130,18 @@ namespace LogBatcher
                     using (var output = new FileStream(tmpLogFilePath, FileMode.Create, FileAccess.Write))
                     using (var reader = new StreamReader(input, Encoder))
                     {
-                        ulong logIndex = 0;
-                        LinkedListNode<ulong> nextLogToKeep = logFile.LogsToKeep.First;
+                        long logIndex = 0;
+                        LinkedListNode<long> nextLogToDelete = logFile.LogsToDelete.First;
                         for (string line = reader.ReadLine(); line != null; line = reader.ReadLine(), ++logIndex)
-                        {                            
-                            if (logIndex == nextLogToKeep?.Value)
+                        {
+                            if (nextLogToDelete != null && logIndex == nextLogToDelete.Value)
+                            {
+                                nextLogToDelete = nextLogToDelete.Next;
+                            }
+                            else
                             {
                                 byte[] lineBytes = Encoder.GetBytes(line + Environment.NewLine);
                                 output.Write(lineBytes, 0, lineBytes.Length);
-                                nextLogToKeep = nextLogToKeep.Next;
                             }
                         }
                         // Replace the original file with the file sans deleted logs
@@ -1244,6 +1154,156 @@ namespace LogBatcher
             {
                 RollbackFiles();
             }
+        }
+
+        /// <summary>
+        /// Signals the Logger thread to stop. Should be called by Dispose.
+        /// </summary>
+        private void Stop()
+        {
+            if (!_stop)
+            {
+                _stop = true;
+                _stopSignal.Set(); // Signal the logger thread to stop
+                _loggingThread?.Join(); // Wait for the logger thread to finish
+                PrintInfo($"{LoggerName} stopped");
+            }
+        }
+
+        private static bool IsValidJsonString(string str, out string validString)
+        {
+            try
+            {
+                using (JsonDocument parsedJson = JsonDocument.Parse(str))
+                {
+                    validString = str;
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+                validString = null;
+                return false;
+            }
+        }
+
+        private static bool TryDeserializeJson<T>(string jsonString, out T deserializedJson)
+        {
+            try
+            {
+                deserializedJson = JsonSerializer.Deserialize<T>(jsonString);
+                return true;
+            }
+            catch (JsonException)
+            {
+                deserializedJson = default;
+                return false;
+            }
+        }
+
+        private static string SanitizeLogString(string logString)
+        {
+            return logString.Trim('\0');
+        }
+
+        private static void PrintError(string errorMsg)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine(GenerateConsoleMessage(errorMsg));
+            Console.ResetColor();
+        }
+
+        private static void PrintWarning(string warningMsg)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Error.WriteLine(GenerateConsoleMessage(warningMsg));
+            Console.ResetColor();
+        }
+
+        private static void PrintInfo(string infoMsg)
+        {
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine(GenerateConsoleMessage(infoMsg));
+            Console.ResetColor();
+        }
+
+        private static string ValidateLoggerName(string loggerName)
+        {
+            if (string.IsNullOrWhiteSpace(loggerName))
+            {
+                return LoggerNameDefault;
+            }
+            string returnValue;
+            if (loggerName.Length > LoggerNameMaxLength)
+            {
+                returnValue = loggerName.Substring(0, LoggerNameMaxLength);
+                PrintError($"Invalid Logger Name: {loggerName}.");
+                PrintWarning($"Logger Name too long (+{LoggerNameMaxLength} characters). Truncated to: {returnValue}.");
+            }
+            else
+            {
+                returnValue = loggerName;
+            }
+            if (string.IsNullOrWhiteSpace(returnValue) || loggerName.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+            {
+                returnValue = LoggerNameDefault;
+                PrintError($"Invalid Logger Name: {loggerName}.");
+                PrintWarning($"Logger Name contains invalid characters. Using default Logger Name: {LoggerNameDefault}.");
+            }
+            return returnValue;
+        }
+
+        private static int CountDirectoriesInPath(string path)
+        {
+           if (string.IsNullOrWhiteSpace(path) || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+           {
+                return -1;
+           }
+           int dirCount = 0;
+           foreach (char c in path)
+           {
+                if (c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar)
+                {
+                    ++dirCount;
+                }
+            }
+           return dirCount;
+        }
+
+        private static string CleanPath(string path)
+        {
+            char dirSep = Path.DirectorySeparatorChar;
+            char altDirSep = Path.AltDirectorySeparatorChar;
+            string pattern = $"[{Regex.Escape(dirSep.ToString())}{Regex.Escape(altDirSep.ToString())}]+";
+            string replacement = dirSep.ToString();
+            string cleanedPath = Regex.Replace(path, pattern, replacement);
+
+            return cleanedPath;
+        }
+
+        private static string ConvertFilePathToMutexName(string filePath)
+        {
+            StringBuilder mutexNameBuilder = new StringBuilder("logbatcherlib-");
+            string sanitizedPathName = filePath.Replace($@"{Path.DirectorySeparatorChar}", string.Empty).Replace($@"{Path.AltDirectorySeparatorChar}", string.Empty);
+
+            mutexNameBuilder.Append(sanitizedPathName);
+
+            return mutexNameBuilder.ToString();
+        }
+
+        private static string GenerateConsoleMessage(string message)
+        {
+            return ConsoleMessagePrefix + message;
+        }
+
+        /// <summary>
+        /// If the generic ReadLogsFileOp is used without a filter, this surrogate filter should be
+        /// passed in.
+        /// </summar>
+        private static bool NoFilter(string line, out string filteredLine)
+        {
+            filteredLine = line;
+            return true;
         }
     }
     
@@ -1262,17 +1322,19 @@ namespace LogBatcher
 
     internal class LogFileDeleteInfo
     {
-        internal LogFileDeleteInfo(int logFileIndex)
+        internal LogFileDeleteInfo(int logFileIndex, LinkedList<long> logsToDelete, bool hasLogToKeep)
         {
-            LogsToKeep = new LinkedList<ulong>();
-            TotalLogsInFile = 0;
+            LogsToDelete = logsToDelete;
+            DeleteAllLogs = !hasLogToKeep;
+            // TotalLogsInFile = totalLogsInFile;
             LogFileIndex = logFileIndex;
+            // DeleteAllLogs = LogsToDelete.Count() == TotalLogsInFile;
         }
 
-        internal LinkedList<ulong> LogsToKeep { get; private set; }
-        internal ulong TotalLogsInFile { get; set; }
-        internal int LogFileIndex { get; private set; }
-        internal bool HasLogsToDelete { get => (ulong)LogsToKeep.Count() < TotalLogsInFile; }
-        internal bool DeleteAllLogs { get => (ulong)LogsToKeep.Count() == 0; }
+        internal LinkedList<long> LogsToDelete { get; private set; }
+        // internal long TotalLogsInFile { get; set; }
+        internal long LogFileIndex { get; private set; }
+        internal bool HasLogsToDelete { get => LogsToDelete.LongCount() > 0; }
+        internal bool DeleteAllLogs { get; private set; }
     }
 }
