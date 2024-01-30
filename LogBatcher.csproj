@@ -59,6 +59,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <PackageReference Include="System.Text.Json" Version="8.0.1" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Import Project="packages\System.Runtime.WindowsRuntime.4.6.0\build\net461\System.Runtime.WindowsRuntime.targets" Condition="Exists('packages\System.Runtime.WindowsRuntime.4.6.0\build\net461\System.Runtime.WindowsRuntime.targets')" />
